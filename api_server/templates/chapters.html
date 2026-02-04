@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ novel_title }}</title>
+    <style>
+        :root {
+            --bg: #f7f0e8;
+            --bg-accent: #efe3d7;
+            --text: #2a2118;
+            --muted: #6a5b4a;
+            --card: #fff9f2;
+            --border: #e5d6c7;
+            --accent: #c4681b;
+        }
+        body[data-theme="dark"] {
+            --bg: #0c0e12;
+            --bg-accent: #151822;
+            --text: #e5e7eb;
+            --muted: #9aa4b2;
+            --card: #151a24;
+            --border: #252c3a;
+            --accent: #ff9d44;
+        }
+        body[data-theme="light"] {
+            --bg: #f8fbff;
+            --bg-accent: #e9f2ff;
+            --text: #1b2430;
+            --muted: #5b6b7b;
+            --card: #ffffff;
+            --border: #d7e3f3;
+            --accent: #2563eb;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Iowan Old Style", "Charter", "Georgia", serif;
+            background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
+                        radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
+                        var(--bg);
+            color: var(--text);
+            padding: 22px 18px 36px;
+        }
+        .wrap { max-width: 720px; margin: 0 auto; }
+        header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+        h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn {
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            padding: 8px 10px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .theme { display: flex; gap: 6px; }
+        .list { display: grid; gap: 10px; }
+        .item {
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--card);
+        }
+        .item a { color: var(--text); text-decoration: none; display: block; font-size: 15px; }
+        .pending { color: var(--muted); font-style: italic; }
+        .genre-box {
+            margin-bottom: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        .genre-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .genre-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            background: var(--bg);
+        }
+        .genre-remove {
+            text-decoration: none;
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .genre-form label { font-size: 12px; color: var(--muted); display: block; margin: 6px 0 4px; }
+        .genre-form input[type="text"] {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 13px;
+        }
+        .genre-form button {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            background: transparent;
+            font-size: 13px;
+            width: 100%;
+        }
+        .genre-options { display: flex; flex-wrap: wrap; gap: 8px; }
+        .genre-options label { font-size: 12px; color: var(--text); }
+    </style>
+</head>
+<body data-theme="{{ theme }}">
+    <div class="wrap">
+        <header>
+            <div>
+                <h1>{{ novel_title }}</h1>
+            </div>
+            <div class="actions">
+                <a class="btn" href="/web">책장</a>
+                <div class="theme">
+                    <a class="btn" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
+                    <a class="btn" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
+                    <a class="btn" href="/web/theme/light?next={{ request.url.path }}">Light</a>
+                </div>
+            </div>
+        </header>
+
+        <section class="genre-box">
+            <div class="genre-tags">
+                {% if novel_genres and novel_genres|length > 0 %}
+                    {% for g in novel_genres %}
+                        <span class="genre-tag">
+                            {{ g.name }}
+                            <a class="genre-remove" href="/web/novel/{{ novel_id }}/genres/remove/{{ g.id }}">x</a>
+                        </span>
+                    {% endfor %}
+                {% else %}
+                    <span class="pending">장르가 아직 없습니다.</span>
+                {% endif %}
+            </div>
+            <form class="genre-form" method="post" action="/web/novel/{{ novel_id }}/genres">
+                <label>기존 장르 선택 (최대 3개)</label>
+                <div class="genre-options">
+                    {% for g in all_genres %}
+                        <label>
+                            <input type="checkbox" name="genres" value="{{ g.name }}">
+                            {{ g.name }}
+                        </label>
+                    {% endfor %}
+                </div>
+                <label>직접 입력 (쉼표로 구분)</label>
+                <input type="text" name="custom_genres" placeholder="예: 로맨스, 성장, 힐링" />
+                <button type="submit">장르 저장</button>
+            </form>
+        </section>
+
+        <section class="list">
+            {% for ch in chapters %}
+                <div class="item">
+                    {% if ch.status == 'DONE' %}
+                        <a href="/web/read/{{ ch.id }}">{{ ch.title }}</a>
+                    {% else %}
+                        <span class="pending">⏳ 다운로드 중...</span>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        </section>
+    </div>
+</body>
+</html>

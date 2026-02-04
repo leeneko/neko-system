@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>소설 요청</title>
+    <style>
+        :root {
+            --bg: #f7f0e8;
+            --bg-accent: #efe3d7;
+            --text: #2a2118;
+            --muted: #6a5b4a;
+            --card: #fff9f2;
+            --border: #e5d6c7;
+            --accent: #c4681b;
+        }
+        body[data-theme="dark"] {
+            --bg: #0c0e12;
+            --bg-accent: #151822;
+            --text: #e5e7eb;
+            --muted: #9aa4b2;
+            --card: #151a24;
+            --border: #252c3a;
+            --accent: #ff9d44;
+        }
+        body[data-theme="light"] {
+            --bg: #f8fbff;
+            --bg-accent: #e9f2ff;
+            --text: #1b2430;
+            --muted: #5b6b7b;
+            --card: #ffffff;
+            --border: #d7e3f3;
+            --accent: #2563eb;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Iowan Old Style", "Charter", "Georgia", serif;
+            background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
+                        radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
+                        var(--bg);
+            color: var(--text);
+            padding: 22px 18px 36px;
+        }
+        .wrap { max-width: 720px; margin: 0 auto; }
+        header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+        h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn {
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            padding: 8px 10px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .theme { display: flex; gap: 6px; }
+        .panel {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 18px;
+        }
+        .tabs {
+            display: inline-flex;
+            gap: 6px;
+            padding: 4px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            margin-bottom: 16px;
+        }
+        .tab {
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--muted);
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .tab.active {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--card);
+        }
+        label { display: block; font-size: 14px; margin-bottom: 6px; color: var(--muted); }
+        input {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            font-size: 15px;
+            margin-bottom: 14px;
+        }
+        .hint { font-size: 13px; color: var(--muted); margin-top: -6px; margin-bottom: 12px; }
+        .genre-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+        .genre-options label { font-size: 13px; color: var(--text); }
+        .submit {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            background: transparent;
+            font-size: 15px;
+        }
+        .status {
+            margin-top: 14px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 14px;
+            border: 1px solid var(--border);
+            background: var(--bg-accent);
+        }
+        .status.success { color: #1d6b2a; border-color: #b7ddc1; background: #eaf7ee; }
+        .status.error { color: #8b1e1e; border-color: #f0b7b7; background: #ffecec; }
+    </style>
+</head>
+<body data-theme="{{ theme }}">
+    <div class="wrap">
+        <header>
+            <h1>소설 요청</h1>
+            <div class="actions">
+                <a class="btn" href="/web">책장</a>
+                <div class="theme">
+                    <a class="btn" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
+                    <a class="btn" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
+                    <a class="btn" href="/web/theme/light?next={{ request.url.path }}">Light</a>
+                </div>
+            </div>
+        </header>
+
+        <div class="panel">
+            <div class="tabs" role="tablist" aria-label="사이트 선택">
+                <button class="tab active" type="button" data-site="booktoki" role="tab" aria-selected="true">북토끼</button>
+                <button class="tab" type="button" data-site="syosetu" role="tab" aria-selected="false">소설가가되자</button>
+            </div>
+
+            <form method="post" action="/web/request">
+                <label for="title">소설 제목</label>
+                <input id="title" name="title" required placeholder="예: 테스트소설" />
+
+                <label for="url">소설 URL</label>
+                <input id="url" name="url" required placeholder="예: https://booktoki469.com/novel/20661854" />
+                <label>장르 선택 (최대 3개)</label>
+                <div class="genre-options">
+                    {% for g in all_genres %}
+                        <label>
+                            <input type="checkbox" name="genres" value="{{ g }}">
+                            {{ g }}
+                        </label>
+                    {% endfor %}
+                </div>
+                <label for="custom_genres">장르 직접 입력 (쉼표로 구분)</label>
+                <input id="custom_genres" name="custom_genres" placeholder="예: 로맨스, 성장, 힐링" />
+                <div id="siteHint" class="hint">지원 사이트: 북토끼</div>
+                <div id="exampleHint" class="hint">예시: 제목 `테스트소설`, URL `https://booktoki469.com/novel/20661854`</div>
+                <div class="hint">요청 후 자동으로 다음 화 여부를 확인합니다.</div>
+
+                <button class="submit" type="submit">요청 보내기</button>
+            </form>
+
+            {% if status %}
+                <div class="status {{ status.type }}">{{ status.msg }}</div>
+            {% endif %}
+        </div>
+    </div>
+    <script>
+        (function () {
+            var tabs = document.querySelectorAll(".tab");
+            var urlInput = document.getElementById("url");
+            var siteHint = document.getElementById("siteHint");
+            var exampleHint = document.getElementById("exampleHint");
+
+            function setActive(site) {
+                tabs.forEach(function (t) {
+                    var isActive = t.getAttribute("data-site") === site;
+                    t.classList.toggle("active", isActive);
+                    t.setAttribute("aria-selected", isActive ? "true" : "false");
+                });
+
+                if (site === "syosetu") {
+                    urlInput.placeholder = "예: https://ncode.syosetu.com/n3289ds/1/";
+                    siteHint.textContent = "지원 사이트: 소설가가되자";
+                    exampleHint.textContent = "예시: 제목 `테스트소설`, URL `https://ncode.syosetu.com/n3289ds/1/`";
+                } else {
+                    urlInput.placeholder = "예: https://booktoki469.com/novel/20661854";
+                    siteHint.textContent = "지원 사이트: 북토끼";
+                    exampleHint.textContent = "예시: 제목 `테스트소설`, URL `https://booktoki469.com/novel/20661854`";
+                }
+            }
+
+            tabs.forEach(function (t) {
+                t.addEventListener("click", function () {
+                    setActive(t.getAttribute("data-site"));
+                });
+            });
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # Rabbit API 서버
+  api:
+    build: ./api_server
+    container_name: rabbit_api
+    restart: always
+    environment:
+      # [중요] 공용 DB 컨테이너 이름으로 접속
+      DB_HOST: shared-postgres
+      DB_PORT: 5432
+      # 기존에 쓰시던 관리자 계정 정보
+      DB_USER: root
+      DB_PASS: neko15746+
+      DB_NAME: rabbit_novel
+    ports:
+      - "8001:8000" # 외부 접속용 포트
+    volumes:
+      - ./api_server:/app
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - dev-network
+
+# 기존에 만들어둔 네트워크 사용
+networks:
+  dev-network:
+    external: true

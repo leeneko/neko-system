@@ -1,0 +1,43 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "worker/**"
+      - ".github/workflows/windows-build.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+          pip install transformers sentencepiece DrissionPage requests pyinstaller
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          cd worker
+          pyinstaller --onefile --noconsole --name "RabbitWorker" `
+            --collect-all transformers `
+            --collect-all sentencepiece `
+            --collect-all torch `
+            combined_worker.py
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RabbitWorker
+          path: worker/dist/RabbitWorker.exe

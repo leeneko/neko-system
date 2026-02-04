@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        :root {
+            --bg: #f7f0e8;
+            --bg-accent: #efe3d7;
+            --text: #2a2118;
+            --muted: #6a5b4a;
+            --card: #fff9f2;
+            --border: #e5d6c7;
+            --accent: #c4681b;
+        }
+        body[data-theme="dark"] {
+            --bg: #0c0e12;
+            --bg-accent: #151822;
+            --text: #e5e7eb;
+            --muted: #9aa4b2;
+            --card: #151a24;
+            --border: #252c3a;
+            --accent: #ff9d44;
+        }
+        body[data-theme="light"] {
+            --bg: #f8fbff;
+            --bg-accent: #e9f2ff;
+            --text: #1b2430;
+            --muted: #5b6b7b;
+            --card: #ffffff;
+            --border: #d7e3f3;
+            --accent: #2563eb;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Iowan Old Style", "Charter", "Georgia", serif;
+            background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
+                        radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
+                        var(--bg);
+            color: var(--text);
+            padding: 22px 18px 36px;
+        }
+        .wrap { max-width: 760px; margin: 0 auto; }
+        header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+        h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn {
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            padding: 8px 10px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .theme { display: flex; gap: 6px; }
+        .content {
+            margin: 18px 0 36px;
+            line-height: 1.85;
+            font-size: 17.5px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            padding: 18px 16px;
+            border-radius: 14px;
+        }
+        .content-title {
+            font-size: 14px;
+            color: var(--muted);
+            margin: 0 0 10px;
+        }
+        .content + .content { margin-top: 14px; }
+        .nav { display: flex; gap: 10px; }
+        .nav button {
+            flex: 1;
+            padding: 14px;
+            background: var(--card);
+            color: var(--text);
+            border: 1px solid var(--border);
+            font-size: 15px;
+            border-radius: 12px;
+        }
+    </style>
+</head>
+<body data-theme="{{ theme }}">
+    <div class="wrap">
+        <header>
+            <h1>{{ title }}</h1>
+            <div class="actions">
+                <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
+                <a class="btn" href="/web/read/{{ chapter_id }}?spacing=1">띄어쓰기</a>
+                <a class="btn" href="/web/read/{{ chapter_id }}?view=original">원본</a>
+                <a class="btn" href="/web/read/{{ chapter_id }}?view=mixed">원본+번역</a>
+                <a class="btn" href="/web/read/{{ chapter_id }}?view=translated">번역</a>
+                <div class="theme">
+                    <a class="btn" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
+                    <a class="btn" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
+                    <a class="btn" href="/web/theme/light?next={{ request.url.path }}">Light</a>
+                </div>
+            </div>
+        </header>
+
+        {% if view_mode == "translated" %}
+            <div class="content">
+                <div class="content-title">번역본</div>
+                {% if translated_content %}
+                    {{ translated_content | safe }}
+                {% else %}
+                    번역 준비 중입니다.
+                {% endif %}
+            </div>
+        {% elif view_mode == "mixed" %}
+            <div class="content">
+                <div class="content-title">원본</div>
+                {{ content | safe }}
+            </div>
+            <div class="content">
+                <div class="content-title">번역본</div>
+                {% if translated_content %}
+                    {{ translated_content | safe }}
+                {% else %}
+                    번역 준비 중입니다.
+                {% endif %}
+            </div>
+        {% else %}
+            <div class="content">
+                {{ content | safe }}
+            </div>
+        {% endif %}
+
+        <div class="nav">
+            <button onclick="location.href='/web/novel/{{ novel_id }}'">목록</button>
+            {% if next_chapter_id %}
+                <button onclick="location.href='/web/read/{{ next_chapter_id }}'">다음 화</button>
+            {% else %}
+                <button disabled style="opacity:0.5">다음 화 없음</button>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
