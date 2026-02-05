@@ -6,6 +6,7 @@ import logging
 import traceback
 import requests
 import subprocess
+import random
 from typing import Optional
 
 from bs4 import BeautifulSoup
@@ -40,6 +41,8 @@ MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
 DRISSION_PORT = int(os.environ.get("DRISSION_PORT", "9222"))
 BROWSER_PAGE = None
 _FAILURE_COUNTS = {}
+# Optional proxy list (comma-separated). Example: "http://user:pass@1.2.3.4:8080,https://5.6.7.8:3128"
+PROXY_LIST = [p.strip() for p in os.environ.get("PROXY_LIST", "").split(",") if p.strip()]
 
 # util: load server url from config.txt if present
 def load_server_url():
@@ -226,6 +229,12 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
             "Accept-Language": "en-US,en;q=0.9"
         }
         s = requests.Session()
+        # If proxies are configured via PROXY_LIST env var, pick a random one
+        if PROXY_LIST:
+            proxy = random.choice(PROXY_LIST)
+            if proxy:
+                s.proxies.update({"http": proxy, "https": proxy})
+                log_info(f"Using proxy for fetch: {proxy}")
         r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         status = getattr(r, "status_code", None)
         body_snip = getattr(r, "text", "")[:1200]
@@ -709,6 +718,10 @@ def main():
             task = get_next_task(server_url)
             if task:
                 process_task(task, server_url)
+                # random delay between requests to help avoid macro detection (5-15s)
+                jitter = random.uniform(5.0, 15.0)
+                log_info(f"Sleeping for {jitter:.1f}s to avoid rate-detection")
+                time.sleep(jitter)
             else:
                 time.sleep(2)
         except KeyboardInterrupt:
