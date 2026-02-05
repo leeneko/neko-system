@@ -495,6 +495,108 @@ def _extract_generic(soup) -> str:
         log_exception("_extract_generic failed")
         return ""
 
+def extract_next_url(html: str, url: str) -> str:
+    """
+    Extract next chapter URL from HTML.
+    Detects site type and applies appropriate parsing rules.
+    
+    Supports:
+    - booktoki: <a id="goNextBtn"> or <a class="btn btn-lg btn-default">
+    - syosetu: <a class="c-pager__item c-pager__item--next"> (returns relative URL like /n3289ds/2/)
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Detect syosetu
+        is_syosetu = "syosetu" in url.lower() or soup.select_one('article.p-novel') is not None
+        
+        if is_syosetu:
+            return _extract_next_url_syosetu(soup, url)
+        else:
+            return _extract_next_url_booktoki(soup, url)
+            
+    except Exception:
+        log_exception("extract_next_url failed")
+        return ""
+
+def _extract_next_url_booktoki(soup, url: str) -> str:
+    """
+    Extract next chapter URL from booktoki format.
+    Tries: <a id="goNextBtn"> then <a class="btn btn-lg btn-default">
+    """
+    try:
+        # Try id="goNextBtn" first
+        next_link = soup.select_one('a#goNextBtn')
+        if next_link:
+            href = next_link.get('href', '')
+            if href:
+                log_info(f"Found next URL via goNextBtn: {href}")
+                return href
+        
+        # Try class="btn btn-lg btn-default"
+        # This might appear multiple times, so check for "next" or similar context
+        links = soup.select('a.btn.btn-lg.btn-default')
+        for link in links:
+            href = link.get('href', '')
+            text = link.get_text(strip=True).lower()
+            # Look for "next" or "다음" in text
+            if href and ('next' in text or '다음' in text or '이후' in text):
+                log_info(f"Found next URL via btn-default: {href}")
+                return href
+        
+        # If no luck, try last btn-default link (might be next button)
+        if links:
+            href = links[-1].get('href', '')
+            if href:
+                log_info(f"Using last btn-default as next URL: {href}")
+                return href
+        
+        log_info("No next URL found for booktoki")
+        return ""
+        
+    except Exception:
+        log_exception("_extract_next_url_booktoki failed")
+        return ""
+
+def _extract_next_url_syosetu(soup, url: str) -> str:
+    """
+    Extract next chapter URL from syosetu format.
+    Looks for <a class="c-pager__item c-pager__item--next">
+    Returns relative URL like /n3289ds/2/
+    Note: There are usually 2 (top and bottom), return first one
+    """
+    try:
+        next_links = soup.select('a.c-pager__item.c-pager__item--next')
+        
+        if not next_links:
+            log_info("No next URL found for syosetu")
+            return ""
+        
+        # Get the first one (they appear at top and bottom)
+        next_link = next_links[0]
+        href = next_link.get('href', '')
+        
+        if href:
+            log_info(f"Found next URL via c-pager__item--next: {href}")
+            # The href should be relative like /n3289ds/2/
+            # If it's already relative, return as-is
+            if href.startswith('/'):
+                return href
+            # If it's full URL, extract the path
+            if 'syosetu.com' in href:
+                # Extract path from full URL
+                from urllib.parse import urlparse
+                parsed = urlparse(href)
+                return parsed.path
+            return href
+        
+        log_info("No href found in next link")
+        return ""
+        
+    except Exception:
+        log_exception("_extract_next_url_syosetu failed")
+        return ""
+
 def save_text_file(dirpath, title, suffix, content):
     try:
         os.makedirs(dirpath, exist_ok=True)
@@ -564,6 +666,9 @@ def process_task(task: dict, server_url: str):
 
         save_text_file(ORIGINAL_DIR, title or url, "_orig", original_text)
 
+        # Extract next chapter URL
+        next_url = extract_next_url(html, url)
+
         translated = ""
         if ENABLE_TRANSLATION:
             # if torch import or model load fails, skip gracefully
@@ -587,7 +692,7 @@ def process_task(task: dict, server_url: str):
             "url": url,
             "title": title,
             "content": combined_content,
-            "next_url": ""
+            "next_url": next_url
         }
         post_result(server_url, result)
         log_info(f"Task {task_id} completed. files: {combined_path}")
