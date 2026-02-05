@@ -1,4 +1,7 @@
 fastapi
+pydantic
 uvicorn
+requests
+DrissionPage
 transformers
 sentencepiece
