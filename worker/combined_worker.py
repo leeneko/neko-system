@@ -30,14 +30,13 @@ TRANSLATION_ENGINE = os.environ.get("TRANSLATION_ENGINE", "mbart50")
 ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "1") == "1"
 MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
 
-
-# Base dir: executable location when frozen, otherwise source dir
 _base_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(_base_dir, "worker_error.log")
 DOWNLOAD_DIR = os.path.join(_base_dir, "download")
 ORIGINAL_DIR = os.path.join(DOWNLOAD_DIR, "original")
 TRANSLATION_DIR = os.path.join(DOWNLOAD_DIR, "translation")
 COMBINED_DIR = os.path.join(DOWNLOAD_DIR, "combined")
+_FAILURE_COUNTS = {}
 
 os.makedirs(ORIGINAL_DIR, exist_ok=True)
 os.makedirs(TRANSLATION_DIR, exist_ok=True)
@@ -170,74 +169,116 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
         status = getattr(r, "status_code", None)
         if status == 200:
             return r.text
-        # log non-200 body snippet for debugging (e.g., Cloudflare "Just a moment...")
         log_error(f"Failed to fetch url: {url} (HTTP {status}) body={getattr(r,'text','')[:500]}")
-        # only attempt headless on 403; otherwise give up
         if status != 403:
             return None
     except requests.exceptions.RequestException as e:
-        # ensure status defined from exception if possible
         try:
             status = e.response.status_code if getattr(e, "response", None) is not None else None
         except Exception:
             status = None
         log_error(f"Failed to fetch url: {url} (HTTP {status})")
-        # only try headless on 403
         if status != 403:
             log_exception(f"requests exception for {url}")
             return None
 
-    # At this point, status indicates 403 -> try headless if available
+    # only try headless when we have a 403
     if status == 403:
-        if HAS_DRISSION:
-            try:
-                log_info(f"Attempting headless fetch for {url} via DrissionPage")
-                # attempt multiple constructor patterns for ChromiumPage
-                opts = None
-                try:
-                    opts = ChromiumOptions()
-                    try: opts.headless = True
-                    except Exception: pass
-                except Exception:
-                    opts = None
-
-                page = None
-                constructors = []
-                if opts is not None:
-                    constructors.append(lambda: ChromiumPage(options=opts))
-                    constructors.append(lambda: ChromiumPage(opts))
-                constructors.append(lambda: ChromiumPage())
-                constructors.append(lambda: ChromiumPage(True))
-
-                last_exc = None
-                for ctor in constructors:
-                    try:
-                        page = ctor()
-                        break
-                    except Exception as ex:
-                        last_exc = ex
-                        continue
-
-                if page is None:
-                    log_error(f"DrissionPage instantiation failed: {repr(last_exc)}")
-                    return None
-
-                try:
-                    page.get(url)
-                    html = page.get_page_source()
-                    try: page.quit()
-                    except Exception: pass
-                    return html
-                except Exception:
-                    log_exception("DrissionPage fetch failed during page.get/get_page_source")
-                    try: page.quit()
-                    except Exception: pass
-                    return None
-            except Exception:
-                log_exception("DrissionPage overall fetch failed")
-                return None
-        else:
+        if not HAS_DRISSION:
             log_error("403 received and DrissionPage not available; skipping headless attempt")
+            return None
+
+        try:
+            log_info(f"Attempting headless fetch for {url} via DrissionPage")
+            # prepare options if available
+            opts = None
+            try:
+                opts = ChromiumOptions()
+                try: opts.headless = True
+                except Exception: pass
+            except Exception:
+                opts = None
+
+            page = None
+            # try different constructor patterns to match library versions
+            ctors = []
+            if opts is not None:
+                ctors.append(lambda: ChromiumPage(options=opts))
+                ctors.append(lambda: ChromiumPage(opts))
+            ctors.append(lambda: ChromiumPage())
+            ctors.append(lambda: ChromiumPage(True))
+
+            last_exc = None
+            for ctor in ctors:
+                try:
+                    page = ctor()
+                    break
+                except Exception as ex:
+                    last_exc = ex
+                    continue
+
+            if page is None:
+                log_error(f"DrissionPage instantiation failed: {repr(last_exc)}")
+                return None
+
+            # try multiple open/get methods
+            opened = False
+            open_methods = ("get", "open", "go", "visit", "navigate", "goto")
+            for m in open_methods:
+                if hasattr(page, m):
+                    try:
+                        getattr(page, m)(url)
+                        opened = True
+                        break
+                    except Exception:
+                        continue
+            # if page provides driver-like attribute, try that
+            if not opened and hasattr(page, "driver") and hasattr(page.driver, "get"):
+                try:
+                    page.driver.get(url)
+                    opened = True
+                except Exception:
+                    opened = False
+
+            # give page a moment to load scripts
+            if opened:
+                time.sleep(1)
+
+            # try multiple getters for page HTML
+            html = None
+            getters = ("get_page_source", "get_page_html", "get_html", "get_source", "page_source", "html", "get_html_source", "get_page")
+            for g in getters:
+                try:
+                    if hasattr(page, g):
+                        attr = getattr(page, g)
+                        val = attr() if callable(attr) else attr
+                        if isinstance(val, str) and val.strip():
+                            html = val
+                            break
+                except Exception:
+                    continue
+            # fallback: if page.driver and it's a selenium WebDriver
+            if not html and hasattr(page, "driver"):
+                try:
+                    drv = page.driver
+                    if hasattr(drv, "page_source"):
+                        html = drv.page_source
+                except Exception:
+                    pass
+
+            try:
+                page.quit()
+            except Exception:
+                pass
+
+            if html:
+                return html
+            else:
+                log_error("DrissionPage fetched but no html obtained")
+                return None
+
+        except Exception:
+            log_exception("DrissionPage overall fetch failed")
             return None
 
     return None
@@ -296,8 +337,21 @@ def process_task(task: dict, server_url: str):
         if not html:
             log_error(f"Fetching failed for task {task_id} url={url} -> notifying server")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "fetch_failed"})
+            # incremental backoff
+            cnt = _FAILURE_COUNTS.get(task_id, 0) + 1
+            _FAILURE_COUNTS[task_id] = cnt
+            backoff = min(5 * cnt, 60)  # 5s,10s,... up to 60s
+            log_info(f"Task {task_id} backoff {backoff}s (failure_count={cnt})")
+            time.sleep(backoff)
             return
 
+        # reset failure counter on success
+        if task_id in _FAILURE_COUNTS:
+            try: del _FAILURE_COUNTS[task_id]
+            except Exception: pass
+
+        # ...rest of processing unchanged...
+        # save title/content/extract/translate etc.
         title = ""
         try:
             soup = BeautifulSoup(html, "html.parser")
@@ -310,7 +364,7 @@ def process_task(task: dict, server_url: str):
         original_text = extract_text_from_html(html)
         if not original_text.strip():
             log_error(f"No extracted text for {url}")
-            post_result(server_url, {"id": task_id, "status": "failed", "reason": "no_text"})
+            post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "no_text"})
             return
 
         # save original
@@ -343,14 +397,20 @@ def process_task(task: dict, server_url: str):
                 "original": rel_orig,
                 "translation": rel_trans,
                 "combined": rel_comb
-            }
+            },
+            # also include server-facing JobResult fields
+            "chapter_id": task_id,
+            "url": url,
+            "title": title,
+            "content": combined_content,
+            "next_url": ""
         }
         post_result(server_url, result)
         log_info(f"Task {task_id} completed. files: {rel_comb}")
 
     except Exception:
         log_exception("process_task failed")
-        post_result(server_url, {"id": task.get("id", ""), "status": "failed", "reason": "exception"})
+        post_fail(server_url, {"chapter_id": task.get("id", ""), "url": task.get("url", ""), "reason": "exception"})
 
 def post_result(server_url: str, payload: dict):
     try:
