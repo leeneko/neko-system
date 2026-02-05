@@ -1,7 +1,10 @@
 fastapi
 pydantic
 uvicorn
+transformers>=4.30.0
+sentencepiece
+beautifulsoup4
 requests
 DrissionPage
+pyinstaller
 transformers
-sentencepiece

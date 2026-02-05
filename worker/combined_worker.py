@@ -1,182 +1,100 @@
+# ...existing code...
 import os
 import sys
 import time
-import random
+import json
+import hashlib
 import logging
-import subprocess
 import requests
-from DrissionPage import ChromiumPage, ChromiumOptions
+import traceback
+from typing import Optional
 
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+# optional: HTML parsing
+from bs4 import BeautifulSoup
 
-# 설정
+# DrissionPage may be used in original project; keep import but not required at top-level for exe.
+try:
+    from DrissionPage import ChromiumPage, ChromiumOptions
+    HAS_DRISSION = True
+except Exception:
+    HAS_DRISSION = False
+
+# Configuration
 CONFIG_FILE = "config.txt"
 DEFAULT_OCI_URL = "http://144.24.87.146:8001"
-TRANSLATION_ENGINE = "mbart50"
+POLL_ENDPOINT = os.environ.get("OCI_POLL_ENDPOINT", "/api/next_task")
+RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/api/task_result")
 TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "facebook/mbart-large-50-many-to-many-mmt")
 ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "1") == "1"
 MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
 
-LOG_FILE = "worker_error.log"
-logging.basicConfig(filename=LOG_FILE, level=logging.ERROR)
+# Base dir: executable location when frozen, otherwise source dir
+_base_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(_base_dir, "worker_error.log")
+DOWNLOAD_DIR = os.path.join(_base_dir, "download")
+ORIGINAL_DIR = os.path.join(DOWNLOAD_DIR, "original")
+TRANSLATION_DIR = os.path.join(DOWNLOAD_DIR, "translation")
+COMBINED_DIR = os.path.join(DOWNLOAD_DIR, "combined")
 
-_tokenizer = None
-_model = None
-_device = "cuda" if torch.cuda.is_available() else "cpu"
+os.makedirs(ORIGINAL_DIR, exist_ok=True)
+os.makedirs(TRANSLATION_DIR, exist_ok=True)
+os.makedirs(COMBINED_DIR, exist_ok=True)
 
+# Logging
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 def log_error(msg: str):
     logging.error(msg)
 
+def log_info(msg: str):
+    logging.info(msg)
 
 def log_exception(msg: str):
-    logging.exception(msg)
+    logging.error(msg + "\n" + traceback.format_exc())
 
-
-def load_server_url():
+def load_server_url() -> str:
     url = DEFAULT_OCI_URL
-    if os.path.exists(CONFIG_FILE):
+    cfg = os.path.join(_base_dir, CONFIG_FILE)
+    if os.path.exists(cfg):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(cfg, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if content.startswith("http"):
                     url = content
         except Exception:
             log_exception("Failed to read config.txt")
-    return url
+    return url.rstrip("/")
 
+# Lazy-loaded translation model globals
+_tokenizer = None
+_model = None
+_device = None
 
-def start_chrome_if_needed():
-    chrome_script = os.environ.get("CHROME_START", "ChromeStart.bat")
-    if not os.path.exists(chrome_script):
-        return
-    try:
-        if os.name == "nt":
-            subprocess.Popen(
-                ["cmd", "/c", chrome_script],
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-        else:
-            subprocess.Popen([chrome_script])
-    except Exception:
-        log_exception("Failed to start ChromeStart.bat")
-
-
-def save_to_txt(title, content):
-    try:
-        base_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(
-            os.path.abspath(__file__)
-        )
-        download_dir = os.path.join(base_dir, "download")
-        if not os.path.exists(download_dir):
-            os.makedirs(download_dir)
-
-        safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '_', '-', '(', ')', '[', ']')]).strip()
-        filename = f"{safe_title}.txt"
-        filepath = os.path.join(download_dir, filename)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(f"제목: {title}\n")
-            f.write("=" * 40 + "\n\n")
-            f.write(content)
+def ensure_model_loaded() -> bool:
+    """Lazy-load tokenizer/model. Return True if loaded."""
+    global _tokenizer, _model, _device
+    if _tokenizer is not None and _model is not None and _device is not None:
         return True
-    except Exception:
-        log_exception("Failed to save txt")
-        return False
-
-
-def is_syosetu(url: str) -> bool:
-    return "ncode.syosetu.com" in url
-
-
-def parse_booktoki(page):
-    title = page.title
-    content = ""
     try:
-        content_elem = page.ele('#novel_content')
-        ps = content_elem.eles('tag:p')
-        if ps:
-            content = "\n".join([p.text for p in ps if p.text.strip()])
+        import torch
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+        td = os.environ.get("TRANSLATION_DEVICE", "cpu").lower()
+        if td == "auto":
+            _device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
-            content = content_elem.text
-    except Exception:
-        content = "본문 파싱 실패"
+            _device = "cuda" if (td == "cuda" and torch.cuda.is_available()) else "cpu"
 
-    next_url = ""
-    try:
-        btn = page.ele('#goNextBtn')
-        if btn:
-            href = btn.attr('href')
-            if href and "http" in href:
-                next_url = href.split('?')[0]
-    except Exception:
-        pass
-    return title, content, next_url
-
-
-def parse_syosetu(page):
-    title = ""
-    content = ""
-    next_url = ""
-
-    try:
-        title_elem = page.ele('css:h1.p-novel__title')
-        if title_elem:
-            title = title_elem.text
-    except Exception:
-        pass
-    if not title:
-        title = page.title
-
-    try:
-        text_blocks = page.eles('css:div.p-novel__text')
-        lines = []
-        for block in text_blocks:
-            ps = block.eles('tag:p')
-            if ps:
-                for p in ps:
-                    lines.append(p.text)
-            else:
-                lines.append(block.text)
-        content = "\n".join([line for line in lines if line is not None])
-    except Exception:
-        content = "본문 파싱 실패"
-
-    try:
-        btn = page.ele('css:a.c-pager__item--next')
-        if btn:
-            href = btn.attr('href')
-            if href:
-                if href.startswith("/"):
-                    next_url = "https://ncode.syosetu.com" + href
-                else:
-                    next_url = href
-    except Exception:
-        pass
-
-    return title, content, next_url
-
-
-def wait_for_content(page, target_url, timeout_sec=180):
-    start_time = time.time()
-    while time.time() - start_time < timeout_sec:
-        if is_syosetu(target_url):
-            if page.ele('css:div.p-novel__text'):
-                return True
-        else:
-            if page.ele('#novel_content'):
-                return True
-        time.sleep(1)
-    return False
-
-
-def ensure_model_loaded():
-    global _tokenizer, _model
-    if _tokenizer is None or _model is None:
         _tokenizer = AutoTokenizer.from_pretrained(TRANSLATE_MODEL)
         _model = AutoModelForSeq2SeqLM.from_pretrained(TRANSLATE_MODEL).to(_device)
-
+        log_info(f"Translation model loaded on {_device}")
+        return True
+    except Exception:
+        log_exception("Failed to load translation model")
+        _tokenizer = None
+        _model = None
+        _device = None
+        return False
 
 def chunk_text(text: str, max_chars: int):
     parts = text.split("\n\n")
@@ -194,25 +112,32 @@ def chunk_text(text: str, max_chars: int):
         chunks.append(buf)
     return chunks
 
-
 def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
-    _tokenizer.src_lang = source_lang
-    encoded = _tokenizer(text, return_tensors="pt", truncation=True, max_length=1024)
-    encoded = {k: v.to(_device) for k, v in encoded.items()}
-    with torch.no_grad():
-        generated = _model.generate(
-            **encoded,
-            forced_bos_token_id=_tokenizer.lang_code_to_id[target_lang],
-            max_length=1024,
-        )
-    return _tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
-
+    if _tokenizer is None or _model is None or _device is None:
+        return ""
+    try:
+        import torch
+        _tokenizer.src_lang = source_lang
+        encoded = _tokenizer(text, return_tensors="pt", truncation=True, max_length=1024)
+        encoded = {k: v.to(_device) for k, v in encoded.items()}
+        with torch.no_grad():
+            generated = _model.generate(
+                **encoded,
+                forced_bos_token_id=_tokenizer.lang_code_to_id[target_lang],
+                max_length=1024,
+            )
+        return _tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
+    except Exception:
+        log_exception("translate_chunk failed")
+        return ""
 
 def translate_text(text: str) -> str:
     if not ENABLE_TRANSLATION:
         return ""
     try:
-        ensure_model_loaded()
+        if not ensure_model_loaded():
+            log_error("Translation skipped: model not available")
+            return ""
         chunks = chunk_text(text, MAX_CHARS)
         outputs = []
         for chunk in chunks:
@@ -222,86 +147,187 @@ def translate_text(text: str) -> str:
         log_exception("Translation failed")
         return ""
 
+def safe_filename(s: str) -> str:
+    s = s.strip().replace("/", "_").replace("\\", "_")
+    if not s:
+        s = "file"
+    # limit length
+    return s[:120]
 
-def process_job(server_url, job_data, page):
-    target_url = job_data['url']
-    chapter_id = job_data['chapter_id']
-
+def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     try:
-        if target_url not in page.url:
-            page.get(target_url)
+        headers = {"User-Agent": "RabbitWorker/1.0"}
+        r = requests.get(url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        log_exception(f"Failed to fetch url: {url}")
+        return None
 
-        is_loaded = wait_for_content(page, target_url)
-        if not is_loaded:
-            log_error("Timeout waiting for page load")
-            return False
+def extract_text_from_html(html: str) -> str:
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        # try common article containers
+        candidates = soup.select("article, #content, .content, .entry-content, .post-content")
+        target = None
+        for c in candidates:
+            if c.get_text(strip=True):
+                target = c
+                break
+        if target is None:
+            # fallback to body
+            target = soup.body or soup
+        paragraphs = target.find_all(["p", "h1", "h2", "h3", "pre"])
+        texts = []
+        for p in paragraphs:
+            t = p.get_text(separator=" ", strip=True)
+            if t:
+                texts.append(t)
+        if texts:
+            return "\n\n".join(texts)
+        # fallback: plain text
+        return soup.get_text(separator="\n", strip=True)
+    except Exception:
+        log_exception("extract_text_from_html failed")
+        return ""
 
-        if is_syosetu(target_url):
-            title, content, next_url = parse_syosetu(page)
-        else:
-            title, content, next_url = parse_booktoki(page)
+def save_text_file(directory: str, base: str, suffix: str, content: str) -> str:
+    # generate deterministic filename
+    h = hashlib.sha1(content.encode("utf-8")).hexdigest()[:10]
+    name = f"{safe_filename(base)}_{h}{suffix}.txt"
+    path = os.path.join(directory, name)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+    except Exception:
+        log_exception(f"Failed to save file: {path}")
+        return ""
 
-        save_to_txt(title, content)
+def process_task(task: dict, server_url: str):
+    """
+    Expected minimal task shape: { "id": "...", "url": "http://..." }
+    """
+    try:
+        task_id = task.get("id", "")
+        url = task.get("url")
+        if not url:
+            log_error(f"Task {task_id} missing url")
+            return
 
-        translation = ""
-        if ENABLE_TRANSLATION and content and is_syosetu(target_url):
-            translation = translate_text(content)
+        log_info(f"Processing task {task_id} url={url}")
 
-        payload = {
-            "chapter_id": chapter_id,
-            "content": content,
-            "next_url": next_url,
-            "title": title,
-            "url": target_url
+        html = fetch_html(url)
+        if not html:
+            # report failure
+            post_result(server_url, {"id": task_id, "status": "failed", "reason": "fetch_failed"})
+            return
+
+        title = ""
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            title_tag = soup.find("title")
+            if title_tag:
+                title = title_tag.get_text(strip=True)
+        except Exception:
+            title = ""
+
+        original_text = extract_text_from_html(html)
+        if not original_text.strip():
+            log_error(f"No extracted text for {url}")
+            post_result(server_url, {"id": task_id, "status": "failed", "reason": "no_text"})
+            return
+
+        # save original
+        orig_path = save_text_file(ORIGINAL_DIR, title or url, "_orig", original_text)
+
+        # translate
+        translated = ""
+        if ENABLE_TRANSLATION:
+            translated = translate_text(original_text)
+
+        trans_path = ""
+        if translated:
+            trans_path = save_text_file(TRANSLATION_DIR, title or url, "_trans", translated)
+
+        # combined (original + translation)
+        combined_content = original_text
+        if translated:
+            combined_content = original_text + "\n\n==== TRANSLATION ====\n\n" + translated
+        combined_path = save_text_file(COMBINED_DIR, title or url, "_combined", combined_content)
+
+        # report success with artifact paths (relative)
+        rel_orig = os.path.relpath(orig_path, _base_dir) if orig_path else ""
+        rel_trans = os.path.relpath(trans_path, _base_dir) if trans_path else ""
+        rel_comb = os.path.relpath(combined_path, _base_dir) if combined_path else ""
+
+        result = {
+            "id": task_id,
+            "status": "done",
+            "artifacts": {
+                "original": rel_orig,
+                "translation": rel_trans,
+                "combined": rel_comb
+            }
         }
-        if translation:
-            payload["translation"] = translation
-            payload["translation_engine"] = TRANSLATION_ENGINE
-
-        res = requests.post(f"{server_url}/worker/submit", json=payload)
-        return res.status_code == 200
+        post_result(server_url, result)
+        log_info(f"Task {task_id} completed. files: {rel_comb}")
 
     except Exception:
-        log_exception("process_job failed")
-        return False
+        log_exception("process_task failed")
+        post_result(server_url, {"id": task.get("id", ""), "status": "failed", "reason": "exception"})
 
-
-def main():
-    server_url = load_server_url()
-    start_chrome_if_needed()
-
-    co = ChromiumOptions()
-    co.set_local_port(9222)
-
+def post_result(server_url: str, payload: dict):
     try:
-        page = ChromiumPage(co)
+        url = server_url + RESULT_ENDPOINT
+        headers = {"Content-Type": "application/json"}
+        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
+        if r.status_code >= 400:
+            log_error(f"post_result returned {r.status_code}: {r.text}")
+        return r
     except Exception:
-        log_error("Failed to connect to Chrome (port 9222). Ensure ChromeStart.bat is running.")
-        return
+        log_exception("post_result failed")
+        return None
 
+def get_next_task(server_url: str) -> Optional[dict]:
+    try:
+        url = server_url + POLL_ENDPOINT
+        r = requests.get(url, timeout=30)
+        if r.status_code == 204:
+            return None
+        if r.status_code != 200:
+            log_error(f"get_next_task returned {r.status_code}")
+            return None
+        j = r.json()
+        # Expecting either {"task": {...}} or {...}
+        if isinstance(j, dict) and "task" in j:
+            return j.get("task")
+        return j
+    except Exception:
+        log_exception("get_next_task failed")
+        return None
+
+def main_loop(poll_interval: int = 10):
+    server_url = load_server_url()
+    log_info(f"Worker started. server_url={server_url} translate_enabled={ENABLE_TRANSLATION}")
     while True:
         try:
-            res = requests.get(f"{server_url}/worker/get", timeout=10)
-            data = res.json()
-
-            if data.get('exists'):
-                if process_job(server_url, data, page):
-                    wait = random.uniform(3, 6)
-                    time.sleep(wait)
-                else:
-                    time.sleep(5)
-            else:
-                time.sleep(3)
-
-        except requests.exceptions.ConnectionError:
-            time.sleep(10)
+            task = get_next_task(server_url)
+            if not task:
+                time.sleep(poll_interval)
+                continue
+            process_task(task, server_url)
+        except KeyboardInterrupt:
+            log_info("Worker interrupted, exiting.")
+            break
         except Exception:
-            log_exception("Main loop error")
-            time.sleep(5)
-
+            log_exception("Main loop unexpected error")
+            time.sleep(poll_interval)
 
 if __name__ == "__main__":
     try:
-        main()
-    except KeyboardInterrupt:
-        pass
+        main_loop()
+    except Exception:
+        log_exception("Fatal error in worker")
+        sys.exit(1)
+# ...existing code...
