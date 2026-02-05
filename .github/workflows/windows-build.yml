@@ -1,5 +1,4 @@
-# ...existing code...
-name: Windows build (RabbitWorker with translation)
+name: Windows build
 
 on:
   push:
@@ -35,34 +34,38 @@ jobs:
 
       - name: Install system dependencies (if any)
         run: |
-          python -m pip install --upgrade pip
+          py -m pip install --upgrade pip
         shell: cmd
 
       - name: Install worker requirements
-        working-directory: rabbit-system/worker
         run: |
+          pushd rabbit-system\worker
           py -m pip install -r requirements.txt
+          popd
         shell: cmd
 
       - name: Install CPU PyTorch and transformers (translation)
-        working-directory: rabbit-system/worker
         run: |
+          pushd rabbit-system\worker
           py -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
           py -m pip install transformers sentencepiece
+          popd
         shell: cmd
 
       - name: Install PyInstaller
-        working-directory: rabbit-system/worker
         run: |
+          pushd rabbit-system\worker
           py -m pip install pyinstaller
+          popd
         shell: cmd
 
       - name: Build RabbitWorker.exe (run build.bat)
-        working-directory: rabbit-system/worker
         env:
           ENABLE_TRANSLATION: ${{ env.ENABLE_TRANSLATION }}
         run: |
+          pushd rabbit-system\worker
           call build.bat
+          popd
         shell: cmd
 
       - name: Upload exe artifact
