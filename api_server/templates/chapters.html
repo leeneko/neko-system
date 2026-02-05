@@ -158,17 +158,54 @@
             </form>
         </section>
 
-        <section class="list">
-            {% for ch in chapters %}
-                <div class="item">
-                    {% if ch.status == 'DONE' %}
-                        <a href="/web/read/{{ ch.id }}">{{ ch.title }}</a>
-                    {% else %}
-                        <span class="pending">⏳ 다운로드 중...</span>
-                    {% endif %}
-                </div>
+        <div class="controls" style="margin-bottom:12px;">
+            <div class="sort-controls" style="display:flex;gap:8px;align-items:center;">
+                <button id="sort-asc" class="btn">오름차순</button>
+                <button id="sort-desc" class="btn">내림차순</button>
+                <span style="color:#666;margin-left:8px;font-size:13px;">(정렬은 로컬에 저장됩니다)</span>
+            </div>
+            </div>
+
+            <ul id="chapters-list">
+            {% for c in chapters %}
+                <li data-id="{{ c.id }}" data-title="{{ c.title }}" style="margin:6px 0;list-style:none;">
+                <a href="/web/read/{{ c.id }}" style="text-decoration:none;color:inherit;">{{ c.title or '로딩중...' }}</a>
+                <span class="status" style="margin-left:8px;color:#888;font-size:13px;">{{ c.status }}</span>
+                </li>
             {% endfor %}
-        </section>
-    </div>
-</body>
+            </ul>
+
+            <script>
+            (function(){
+            const list = document.getElementById('chapters-list');
+            const btnAsc = document.getElementById('sort-asc');
+            const btnDesc = document.getElementById('sort-desc');
+
+            function sortList(asc){
+                const items = Array.from(list.querySelectorAll('li'));
+                items.sort((a,b)=>{
+                const ai = parseInt(a.dataset.id||0,10);
+                const bi = parseInt(b.dataset.id||0,10);
+                return asc ? ai - bi : bi - ai;
+                });
+                items.forEach(i=>list.appendChild(i));
+                try { localStorage.setItem('chapters_sort_{{ novel_id }}', asc ? 'asc' : 'desc'); } catch(e){}
+                btnAsc.disabled = asc;
+                btnDesc.disabled = !asc;
+            }
+
+            btnAsc.addEventListener('click', ()=>sortList(true));
+            btnDesc.addEventListener('click', ()=>sortList(false));
+
+            // apply saved preference (default: asc)
+            try {
+                const pref = localStorage.getItem('chapters_sort_{{ novel_id }}') || 'asc';
+                sortList(pref === 'asc');
+            } catch(e) {
+                sortList(true);
+            }
+            })();
+            </script>
+        </div>
+    </body>
 </html>

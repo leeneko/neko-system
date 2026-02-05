@@ -144,6 +144,11 @@ class JobResult(BaseModel):
     translation: Optional[str] = None
     translation_engine: Optional[str] = None
 
+class JobFail(BaseModel):
+    chapter_id: int
+    reason: Optional[str] = None
+    url: Optional[str] = None
+
 # --- DB 연결 ---
 def get_db_connection():
     return psycopg2.connect(
@@ -649,3 +654,17 @@ def submit_job(data: JobResult):
     conn.commit()
     conn.close()
     return {"status": "success"}
+
+@app.post("/worker/fail")
+def fail_job(data: JobFail):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (data.chapter_id,))
+        conn.commit()
+        return {"status": "success"}
+    except Exception as e:
+        conn.rollback()
+        return {"status":"error","msg": str(e)}
+    finally:
+        conn.close()

@@ -22,8 +22,10 @@ except Exception:
 # Configuration
 CONFIG_FILE = "config.txt"
 DEFAULT_OCI_URL = "http://144.24.87.146:8001"
+# endpoints
 POLL_ENDPOINT = os.environ.get("OCI_POLL_ENDPOINT", "/worker/get")
 RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/worker/submit")
+FAIL_ENDPOINT = os.environ.get("OCI_FAIL_ENDPOINT", "/worker/fail")
 TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "facebook/mbart-large-50-many-to-many-mmt")
 ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "1") == "1"
 MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
@@ -156,10 +158,40 @@ def safe_filename(s: str) -> str:
 
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     try:
-        headers = {"User-Agent": "RabbitWorker/1.0"}
-        r = requests.get(url, headers=headers, timeout=timeout)
+        headers = {
+            # realistic browser UA to avoid simple bot blocks
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+            "Referer": DEFAULT_OCI_URL,
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        s = requests.Session()
+        r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         r.raise_for_status()
         return r.text
+    except requests.exceptions.HTTPError as e:
+        status = None
+        try:
+            status = e.response.status_code
+        except Exception:
+            status = None
+        log_error(f"Failed to fetch url: {url} (HTTP {status})")
+        # if 403 and DrissionPage available, try a headless browser to bypass simple blocks
+        if status == 403 and HAS_DRISSION:
+            try:
+                log_info(f"Attempting headless fetch for {url} via DrissionPage")
+                opts = ChromiumOptions()
+                opts.headless = True
+                page = ChromiumPage(options=opts)
+                page.get(url)
+                html = page.get_page_source()
+                try:
+                    page.quit()
+                except Exception:
+                    pass
+                return html
+            except Exception:
+                log_exception("DrissionPage fetch failed")
+        return None
     except Exception:
         log_exception(f"Failed to fetch url: {url}")
         return None
@@ -205,9 +237,6 @@ def save_text_file(directory: str, base: str, suffix: str, content: str) -> str:
         return ""
 
 def process_task(task: dict, server_url: str):
-    """
-    Expected minimal task shape: { "id": "...", "url": "http://..." }
-    """
     try:
         task_id = task.get("id", "")
         url = task.get("url")
@@ -219,8 +248,8 @@ def process_task(task: dict, server_url: str):
 
         html = fetch_html(url)
         if not html:
-            # report failure
-            post_result(server_url, {"id": task_id, "status": "failed", "reason": "fetch_failed"})
+            log_error(f"Fetching failed for task {task_id} url={url} -> notifying server")
+            post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "fetch_failed"})
             return
 
         title = ""
@@ -279,14 +308,42 @@ def process_task(task: dict, server_url: str):
 
 def post_result(server_url: str, payload: dict):
     try:
-        url = server_url + RESULT_ENDPOINT
+        if RESULT_ENDPOINT.startswith("http"):
+            url = RESULT_ENDPOINT
+        else:
+            url = server_url.rstrip("/") + "/" + RESULT_ENDPOINT.lstrip("/")
+
+        body = {
+            "chapter_id": payload.get("id") or payload.get("chapter_id"),
+            "url": payload.get("url", ""),
+            "title": payload.get("title", "") or payload.get("chapter_title", ""),
+            "content": payload.get("content", "") or payload.get("body", ""),
+            "next_url": payload.get("next_url") or payload.get("next"),
+            "translation": payload.get("translation", ""),
+            "translation_engine": payload.get("translation_engine", TRANSLATION_ENGINE),
+        }
         headers = {"Content-Type": "application/json"}
-        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
+        r = requests.post(url, headers=headers, data=json.dumps(body), timeout=20)
         if r.status_code >= 400:
             log_error(f"post_result returned {r.status_code}: {r.text}")
         return r
     except Exception:
         log_exception("post_result failed")
+        return None
+
+def post_fail(server_url: str, payload: dict):
+    try:
+        if FAIL_ENDPOINT.startswith("http"):
+            url = FAIL_ENDPOINT
+        else:
+            url = server_url.rstrip("/") + "/" + FAIL_ENDPOINT.lstrip("/")
+        headers = {"Content-Type": "application/json"}
+        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
+        if r.status_code >= 400:
+            log_error(f"post_fail returned {r.status_code}: {r.text}")
+        return r
+    except Exception:
+        log_exception("post_fail failed")
         return None
 
 def get_next_task(server_url: str) -> Optional[dict]:
