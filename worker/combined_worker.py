@@ -157,7 +157,12 @@ def safe_filename(s: str) -> str:
     return s[:120]
 
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
+    """
+    Try requests with realistic User-Agent. If requests returns a Cloudflare challenge (403 + challenge page),
+    try DrissionPage in headful mode and wait for manual unblock up to MANUAL_WAIT_SECONDS.
+    """
     status = None
+    MANUAL_WAIT_SECONDS = int(os.environ.get("DRISSION_MANUAL_WAIT", "600"))  # seconds to wait for manual unblock
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -167,11 +172,20 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
         s = requests.Session()
         r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         status = getattr(r, "status_code", None)
+        body_snip = getattr(r, "text", "")[:800]
         if status == 200:
             return r.text
-        log_error(f"Failed to fetch url: {url} (HTTP {status}) body={getattr(r,'text','')[:500]}")
-        if status != 403:
+
+        log_error(f"Failed to fetch url: {url} (HTTP {status}) body={body_snip}")
+
+        # detect cloudflare-like challenge in body
+        challenge_keywords = ("just a moment", "cf-challenge", "checking your browser", "cloudflare", "captcha")
+        is_challenge = any(k in body_snip.lower() for k in challenge_keywords)
+
+        # If not a challenge and not 403, give up
+        if status != 403 and not is_challenge:
             return None
+
     except requests.exceptions.RequestException as e:
         try:
             status = e.response.status_code if getattr(e, "response", None) is not None else None
@@ -181,71 +195,81 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
         if status != 403:
             log_exception(f"requests exception for {url}")
             return None
+        # if exception with 403, treat as possible challenge
+        is_challenge = True
 
-    # only try headless when we have a 403
-    if status == 403:
-        if not HAS_DRISSION:
-            log_error("403 received and DrissionPage not available; skipping headless attempt")
+    # Only try DrissionPage when 403 or challenge detected
+    if not (status == 403 or is_challenge):
+        return None
+
+    if not HAS_DRISSION:
+        log_error("403/challenge received and DrissionPage not available; skipping browser attempt")
+        return None
+
+    try:
+        log_info(f"Attempting browser fetch for {url} via DrissionPage (manual-unblock allowed)")
+        # prepare options and prefer headful
+        opts = None
+        try:
+            opts = ChromiumOptions()
+            try:
+                opts.headless = False
+            except Exception:
+                pass
+        except Exception:
+            opts = None
+
+        page = None
+        ctors = []
+        if opts is not None:
+            ctors.append(lambda: ChromiumPage(options=opts))
+            ctors.append(lambda: ChromiumPage(opts))
+        # try constructor variants
+        ctors.append(lambda: ChromiumPage(False))
+        ctors.append(lambda: ChromiumPage())
+
+        last_exc = None
+        for ctor in ctors:
+            try:
+                page = ctor()
+                break
+            except Exception as ex:
+                last_exc = ex
+                continue
+
+        if page is None:
+            log_error(f"DrissionPage instantiation failed: {repr(last_exc)}")
             return None
 
-        try:
-            log_info(f"Attempting headless fetch for {url} via DrissionPage")
-            # prepare options if available
-            opts = None
-            try:
-                opts = ChromiumOptions()
-                try: opts.headless = True
-                except Exception: pass
-            except Exception:
-                opts = None
-
-            page = None
-            # try different constructor patterns to match library versions
-            ctors = []
-            if opts is not None:
-                ctors.append(lambda: ChromiumPage(options=opts))
-                ctors.append(lambda: ChromiumPage(opts))
-            ctors.append(lambda: ChromiumPage())
-            ctors.append(lambda: ChromiumPage(True))
-
-            last_exc = None
-            for ctor in ctors:
+        # open page
+        opened = False
+        open_methods = ("get", "open", "go", "visit", "navigate", "goto")
+        for m in open_methods:
+            if hasattr(page, m):
                 try:
-                    page = ctor()
-                    break
-                except Exception as ex:
-                    last_exc = ex
-                    continue
-
-            if page is None:
-                log_error(f"DrissionPage instantiation failed: {repr(last_exc)}")
-                return None
-
-            # try multiple open/get methods
-            opened = False
-            open_methods = ("get", "open", "go", "visit", "navigate", "goto")
-            for m in open_methods:
-                if hasattr(page, m):
-                    try:
-                        getattr(page, m)(url)
-                        opened = True
-                        break
-                    except Exception:
-                        continue
-            # if page provides driver-like attribute, try that
-            if not opened and hasattr(page, "driver") and hasattr(page.driver, "get"):
-                try:
-                    page.driver.get(url)
+                    getattr(page, m)(url)
                     opened = True
+                    break
                 except Exception:
-                    opened = False
+                    continue
+        if not opened and hasattr(page, "driver") and hasattr(page.driver, "get"):
+            try:
+                page.driver.get(url)
+                opened = True
+            except Exception:
+                opened = False
 
-            # give page a moment to load scripts
-            if opened:
-                time.sleep(1)
+        if not opened:
+            log_error("Browser opened but couldn't navigate to URL")
+            try: page.quit()
+            except Exception: pass
+            return None
 
-            # try multiple getters for page HTML
-            html = None
+        # wait for challenge to clear (manual unblock allowed)
+        start = time.time()
+        html = None
+        while True:
+            val = None
             getters = ("get_page_source", "get_page_html", "get_html", "get_source", "page_source", "html", "get_html_source", "get_page")
             for g in getters:
                 try:
@@ -253,35 +277,50 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                         attr = getattr(page, g)
                         val = attr() if callable(attr) else attr
                         if isinstance(val, str) and val.strip():
-                            html = val
                             break
                 except Exception:
+                    val = None
                     continue
-            # fallback: if page.driver and it's a selenium WebDriver
-            if not html and hasattr(page, "driver"):
+            if not val and hasattr(page, "driver"):
                 try:
                     drv = page.driver
                     if hasattr(drv, "page_source"):
-                        html = drv.page_source
+                        val = drv.page_source
                 except Exception:
-                    pass
+                    val = None
 
-            try:
-                page.quit()
-            except Exception:
-                pass
+            if isinstance(val, str) and val.strip():
+                snippet = val[:1000].lower()
+                if not any(k in snippet for k in ("just a moment", "cf-challenge", "checking your browser", "cloudflare", "captcha")):
+                    html = val
+                    break
+                else:
+                    elapsed = int(time.time() - start)
+                    if elapsed % 10 == 0:
+                        log_info(f"Waiting for manual unblock for {url}: elapsed {elapsed}s (will wait up to {MANUAL_WAIT_SECONDS}s)")
+            if time.time() - start > MANUAL_WAIT_SECONDS:
+                log_error(f"Manual unblock timeout after {MANUAL_WAIT_SECONDS}s for {url}")
+                break
+            time.sleep(3)
 
-            if html:
-                return html
-            else:
-                log_error("DrissionPage fetched but no html obtained")
-                return None
-
+        try:
+            page.quit()
         except Exception:
-            log_exception("DrissionPage overall fetch failed")
+            pass
+
+        if html:
+            return html
+        else:
             return None
 
-    return None
+    except Exception:
+        log_exception("DrissionPage overall fetch failed")
+        try:
+            if page:
+                page.quit()
+        except Exception:
+            pass
+        return None
 
 def extract_text_from_html(html: str) -> str:
     try:

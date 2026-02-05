@@ -4,62 +4,67 @@
   <meta charset="utf-8">
   <title>{{ title }} - 읽기</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <!-- use global stylesheet (do not override) -->
-  <link rel="stylesheet" href="/static/style.css">
   <style>
-    /* Minimal, non-invasive styles for toolbar / toast only.
-       Avoid overriding global typography or theme variables. */
-    .reader-toolbar { display:flex; gap:12px; margin:10px 0 14px; flex-wrap:wrap; align-items:center; }
-    .reader-toolbar .group { display:flex; gap:8px; align-items:center; }
-    .reader-toolbar .btn { padding:6px 10px; border-radius:4px; cursor:pointer; }
-    .font-select { padding:6px; }
-    .content-area { /* do not force font-family; defer to global CSS */ font-size:16px; line-height:1.8; }
-    #toast {
-      visibility: hidden;
-      min-width: 200px;
-      margin-left: -100px;
-      background-color: rgba(0,0,0,0.85);
-      color: #fff;
-      text-align: center;
-      border-radius: 4px;
-      padding: 10px 14px;
-      position: fixed;
-      z-index: 10000;
-      left: 50%;
-      bottom: 30px;
-      font-size: 14px;
-      opacity: 0;
-      transition: opacity .2s ease-in-out, visibility 0s linear .2s;
+    /* Shared minimal theme & layout so read.html matches other pages */
+    :root{
+      --bg-paper: #fafafa;
+      --text-paper: #222;
+      --bg-light: #fff;
+      --text-light: #222;
+      --bg-dark: #0b0b0b;
+      --text-dark: #eee;
+      --accent: #2b7cff;
+      --max-width: 900px;
     }
-    #toast.show {
-      visibility: visible;
-      opacity: 1;
-      transition-delay: 0s;
-    }
+    html,body{height:100%;margin:0;padding:0;font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",Arial,Helvetica,"Apple SD Gothic Neo",sans-serif;}
+    body[data-theme="paper"]{background:var(--bg-paper);color:var(--text-paper);}
+    body[data-theme="light"]{background:var(--bg-light);color:var(--text-light);}
+    body[data-theme="dark"]{background:var(--bg-dark);color:var(--text-dark);}
+    a{color:inherit}
+    .wrap, .container{max-width:var(--max-width);margin:20px auto;padding:18px;}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
+    h1{font-size:20px;margin:6px 0 14px;}
+    .reader-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
+    .reader-toolbar .group{display:flex;gap:8px;align-items:center;}
+    .btn{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--accent);color:#fff;text-decoration:none;cursor:pointer;border:0;}
+    .btn.ghost{background:transparent;color:var(--accent);border:1px solid rgba(0,0,0,0.06);}
+    .content-area{font-size:16px;line-height:1.8;white-space:pre-wrap;}
+    .nav-buttons{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;}
+    #toast{visibility:hidden;min-width:200px;margin-left:-100px;background-color:rgba(0,0,0,0.85);color:#fff;text-align:center;border-radius:4px;padding:10px 14px;position:fixed;z-index:10000;left:50%;bottom:30px;font-size:14px;opacity:0;transition:opacity .2s ease-in-out;}
+    #toast.show{visibility:visible;opacity:1;}
+    select.font-select{padding:6px;border-radius:4px;}
   </style>
 </head>
 <body data-theme="{{ theme }}">
-  <div class="container">
-    <!-- Toolbar: uses global visual tokens from style.css -->
+  <div class="wrap">
+    <header>
+      <div style="display:flex;gap:12px;align-items:center;">
+        <a class="btn" href="/web">홈</a>
+        <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/web/novel/{{ novel_id }}/refresh">새로고침</a>
+      </div>
+    </header>
+
     <div class="reader-toolbar" role="toolbar" aria-label="reader controls">
       <div class="group" id="nav-group">
-        <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
         {% if next_chapter_id %}
-          <a class="btn" id="next-top" href="/web/read/{{ next_chapter_id }}?view={{ view_mode }}">다음</a>
+          <a id="next-top" class="btn" href="/web/read/{{ next_chapter_id }}?view={{ view_mode }}">다음</a>
         {% else %}
-          <a class="btn" id="next-top" href="javascript:void(0)" data-no-next="1">다음</a>
+          <a id="next-top" class="btn" href="javascript:void(0)" data-no-next="1">다음</a>
         {% endif %}
       </div>
 
       <div class="group" id="view-group">
-        <label for="font-select" style="font-size:13px;color:inherit;margin-right:6px;">글꼴</label>
+        <label for="font-select" style="font-size:13px;color:inherit;">글꼴</label>
         <select id="font-select" class="font-select">
           <option value="">기본</option>
           <option value="Noto Serif KR, serif">명조 계열</option>
-          <option value="'Malgun Gothic', '맑은 고딕', Arial">맑은고딕</option>
+          <option value="'Malgun Gothic', '맑은 고딕', Arial">맑은 고딕</option>
           <option value="Courier New, monospace">등폭(코드)</option>
         </select>
-        <button id="spacing-toggle" class="btn">간격 보정</button>
+        <button id="spacing-toggle" class="btn ghost">간격 보정</button>
       </div>
 
       <div class="group" id="action-group">
@@ -74,20 +79,20 @@
     </div>
 
     {% if translated_content %}
-    <hr>
+    <hr style="margin:18px 0;">
     <h3>번역</h3>
     <div id="translated" class="content-area">
       {{ translated_content | safe }}
     </div>
     {% endif %}
 
-    <div class="nav-buttons" style="margin-top:14px;">
+    <div class="nav-buttons">
       {% if next_chapter_id %}
         <a id="next-btn" class="btn" href="/web/read/{{ next_chapter_id }}?view={{ view_mode }}">다음</a>
       {% else %}
         <a id="next-btn" class="btn" href="javascript:void(0)" data-no-next="1">다음</a>
       {% endif %}
-      <a id="list-btn" class="btn" href="/web/novel/{{ novel_id }}">목록</a>
+      <a id="list-btn" class="btn ghost" href="/web/novel/{{ novel_id }}">목록</a>
     </div>
   </div>
 
@@ -95,35 +100,44 @@
 
   <script>
   (function(){
-    // font selection: apply inline style only to content area (non-invasive)
+    // ensure data-theme exists and fallback to cookie 'theme' or 'paper'
+    try {
+      const allowed = new Set(['paper','dark','light']);
+      const body = document.body;
+      const current = body.getAttribute('data-theme');
+      if(!current || !allowed.has(current)){
+        const match = document.cookie.match(/(?:^|; )theme=([^;]+)/);
+        const theme = match ? decodeURIComponent(match[1]) : null;
+        const apply = allowed.has(theme) ? theme : 'paper';
+        body.setAttribute('data-theme', apply);
+      }
+    } catch(e){ console.warn('theme apply failed', e); }
+
+    // font selection persistence
     const fontSelect = document.getElementById('font-select');
     const content = document.getElementById('content');
-    function applyFont(f){
-      if(!content) return;
-      if(!f) {
-        content.style.fontFamily = '';
-      } else {
+    if(fontSelect && content){
+      const saved = (function(){try{return localStorage.getItem('reader_font')}catch(e){return null}})();
+      if(saved){ fontSelect.value = saved; content.style.fontFamily = saved; }
+      fontSelect.addEventListener('change', function(){
+        const f = fontSelect.value || '';
         content.style.fontFamily = f;
-      }
-      try { localStorage.setItem('reader_font', f || ''); } catch(e){}
-    }
-    fontSelect.addEventListener('change', ()=> applyFont(fontSelect.value));
-    const savedFont = (function(){ try{ return localStorage.getItem('reader_font'); }catch(e){return null;} })();
-    if(savedFont){
-      fontSelect.value = savedFont;
-      applyFont(savedFont);
+        try{ localStorage.setItem('reader_font', f); }catch(e){}
+      });
     }
 
-    // spacing toggle uses existing server param behavior
+    // spacing toggle uses same query param behavior
     const spacingBtn = document.getElementById('spacing-toggle');
-    spacingBtn.addEventListener('click', ()=>{
-      const params = new URLSearchParams(window.location.search);
-      const current = params.get('spacing') === '1';
-      if(current) params.delete('spacing'); else params.set('spacing','1');
-      window.location.search = params.toString();
-    });
+    if(spacingBtn){
+      spacingBtn.addEventListener('click', function(){
+        const params = new URLSearchParams(window.location.search);
+        const current = params.get('spacing') === '1';
+        if(current) params.delete('spacing'); else params.set('spacing','1');
+        window.location.search = params.toString();
+      });
+    }
 
-    // Next button toast behavior (both top and bottom)
+    // next button behavior (toast then list)
     function attachNext(btn){
       if(!btn) return;
       btn.addEventListener('click', function(e){
@@ -134,7 +148,7 @@
           setTimeout(function(){
             if(toast){ toast.classList.remove('show'); }
             window.location.href = '/web/novel/{{ novel_id }}';
-          }, 1200);
+          }, 1100);
         }
       });
     }
