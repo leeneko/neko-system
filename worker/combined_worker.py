@@ -291,18 +291,51 @@ def post_result(server_url: str, payload: dict):
 
 def get_next_task(server_url: str) -> Optional[dict]:
     try:
-        url = server_url + POLL_ENDPOINT
+        if POLL_ENDPOINT.startswith("http"):
+            url = POLL_ENDPOINT
+        else:
+            url = server_url.rstrip("/") + "/" + POLL_ENDPOINT.lstrip("/")
+        log_info(f"Polling next task from {url}")
         r = requests.get(url, timeout=30)
+
         if r.status_code == 204:
             return None
-        if r.status_code != 200:
-            log_error(f"get_next_task returned {r.status_code}")
-            return None
-        j = r.json()
-        # Expecting either {"task": {...}} or {...}
-        if isinstance(j, dict) and "task" in j:
-            return j.get("task")
-        return j
+        if r.status_code == 200:
+            try:
+                j = r.json()
+            except Exception:
+                log_error(f"get_next_task: invalid JSON from {url}: {r.text[:1000]}")
+                return None
+            if isinstance(j, dict) and "task" in j:
+                return j.get("task")
+            return j
+
+        log_error(f"get_next_task returned {r.status_code}: {r.text[:2000]}")
+
+        alts = os.environ.get("OCI_POLL_ALTERNATIVES", "")
+        if alts:
+            for ep in [e.strip() for e in alts.split(",") if e.strip()]:
+                if ep.startswith("http"):
+                    alt_url = ep
+                else:
+                    alt_url = server_url.rstrip("/") + "/" + ep.lstrip("/")
+                log_info(f"Trying alternative poll endpoint {alt_url}")
+                try:
+                    r2 = requests.get(alt_url, timeout=20)
+                    if r2.status_code == 200:
+                        try:
+                            j2 = r2.json()
+                        except Exception:
+                            log_error(f"alt {alt_url} returned non-json: {r2.text[:1000]}")
+                            continue
+                        if isinstance(j2, dict) and "task" in j2:
+                            return j2.get("task")
+                        return j2
+                    else:
+                        log_error(f"alternative {alt_url} returned {r2.status_code}: {r2.text[:1000]}")
+                except Exception:
+                    log_exception(f"alternative {alt_url} request failed")
+        return None
     except Exception:
         log_exception("get_next_task failed")
         return None
