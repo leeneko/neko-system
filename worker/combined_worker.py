@@ -22,8 +22,8 @@ except Exception:
 # Configuration
 CONFIG_FILE = "config.txt"
 DEFAULT_OCI_URL = "http://144.24.87.146:8001"
-POLL_ENDPOINT = os.environ.get("OCI_POLL_ENDPOINT", "/api/next_task")
-RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/api/task_result")
+POLL_ENDPOINT = os.environ.get("OCI_POLL_ENDPOINT", "/worker/get")
+RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/worker/submit")
 TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "facebook/mbart-large-50-many-to-many-mmt")
 ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "1") == "1"
 MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
@@ -291,51 +291,66 @@ def post_result(server_url: str, payload: dict):
 
 def get_next_task(server_url: str) -> Optional[dict]:
     try:
+        # build primary URL: allow POLL_ENDPOINT to be full URL or relative path
         if POLL_ENDPOINT.startswith("http"):
             url = POLL_ENDPOINT
         else:
             url = server_url.rstrip("/") + "/" + POLL_ENDPOINT.lstrip("/")
         log_info(f"Polling next task from {url}")
         r = requests.get(url, timeout=30)
-
-        if r.status_code == 204:
-            return None
+        log_info(f"Poll response: status={r.status_code} body={r.text[:1000]}")
         if r.status_code == 200:
             try:
                 j = r.json()
             except Exception:
                 log_error(f"get_next_task: invalid JSON from {url}: {r.text[:1000]}")
                 return None
-            if isinstance(j, dict) and "task" in j:
-                return j.get("task")
-            return j
-
-        log_error(f"get_next_task returned {r.status_code}: {r.text[:2000]}")
-
-        alts = os.environ.get("OCI_POLL_ALTERNATIVES", "")
-        if alts:
-            for ep in [e.strip() for e in alts.split(",") if e.strip()]:
-                if ep.startswith("http"):
-                    alt_url = ep
-                else:
-                    alt_url = server_url.rstrip("/") + "/" + ep.lstrip("/")
-                log_info(f"Trying alternative poll endpoint {alt_url}")
-                try:
-                    r2 = requests.get(alt_url, timeout=20)
-                    if r2.status_code == 200:
-                        try:
-                            j2 = r2.json()
-                        except Exception:
-                            log_error(f"alt {alt_url} returned non-json: {r2.text[:1000]}")
-                            continue
-                        if isinstance(j2, dict) and "task" in j2:
-                            return j2.get("task")
-                        return j2
+            # api_server /worker/get returns {"exists": True/False, "chapter_id":..., "url":..., "novel_id":...}
+            if isinstance(j, dict):
+                if "exists" in j:
+                    if not j.get("exists"):
+                        return None
+                    return {
+                        "id": j.get("chapter_id"),
+                        "url": j.get("url"),
+                        "novel_id": j.get("novel_id")
+                    }
+                # fallback: if server returns task-like dict directly
+                if "chapter_id" in j and "url" in j:
+                    return {"id": j.get("chapter_id"), "url": j.get("url"), "novel_id": j.get("novel_id")}
+            return None
+        else:
+            log_error(f"get_next_task returned {r.status_code}: {r.text[:2000]}")
+            # try alternatives from OCI_POLL_ALTERNATIVES if any
+            alts = os.environ.get("OCI_POLL_ALTERNATIVES", "")
+            if alts:
+                for ep in [e.strip() for e in alts.split(",") if e.strip()]:
+                    if ep.startswith("http"):
+                        alt_url = ep
                     else:
-                        log_error(f"alternative {alt_url} returned {r2.status_code}: {r2.text[:1000]}")
-                except Exception:
-                    log_exception(f"alternative {alt_url} request failed")
-        return None
+                        alt_url = server_url.rstrip("/") + "/" + ep.lstrip("/")
+                    log_info(f"Trying alternative poll endpoint {alt_url}")
+                    try:
+                        r2 = requests.get(alt_url, timeout=20)
+                        log_info(f"Alt poll response: {alt_url} status={r2.status_code} body={r2.text[:1000]}")
+                        if r2.status_code == 200:
+                            try:
+                                j2 = r2.json()
+                            except Exception:
+                                log_error(f"alt {alt_url} returned non-json: {r2.text[:1000]}")
+                                continue
+                            if isinstance(j2, dict):
+                                if "exists" in j2:
+                                    if not j2.get("exists"):
+                                        return None
+                                    return {"id": j2.get("chapter_id"), "url": j2.get("url"), "novel_id": j2.get("novel_id")}
+                                if "chapter_id" in j2 and "url" in j2:
+                                    return {"id": j2.get("chapter_id"), "url": j2.get("url"), "novel_id": j2.get("novel_id")}
+                        else:
+                            log_error(f"alternative {alt_url} returned {r2.status_code}: {r2.text[:1000]}")
+                    except Exception:
+                        log_exception(f"alternative {alt_url} request failed")
+            return None
     except Exception:
         log_exception("get_next_task failed")
         return None

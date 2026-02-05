@@ -1,4 +1,4 @@
-name: Windows build (RabbitWorker with translation)
+name: Windows build
 
 on:
   push:
@@ -40,40 +40,46 @@ jobs:
       - name: Show worker folder before install (diagnostic)
         run: |
           dir /b
-          dir rabbit-system\worker /a
+          if exist worker (
+            dir worker /a
+          ) else (
+            echo "worker folder not found"
+          )
         shell: cmd
 
       - name: Install worker requirements
         run: |
-          pushd rabbit-system\worker
-          py -m pip install -r requirements.txt > pip_install_req.txt 2>&1
+          pushd worker
+          py -m pip install -r requirements.txt > pip_install_req.txt 2>&1 || set REQEXIT=%ERRORLEVEL%
           type pip_install_req.txt
           popd
+          if defined REQEXIT exit /b %REQEXIT%
         shell: cmd
 
       - name: Install CPU PyTorch and transformers (translation)
         run: |
-          pushd rabbit-system\worker
-          py -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu > pip_install_torch.txt 2>&1 || (type pip_install_torch.txt & exit /b %ERRORLEVEL%)
-          py -m pip install transformers sentencepiece >> pip_install_torch.txt 2>&1 || (type pip_install_torch.txt & exit /b %ERRORLEVEL%)
+          pushd worker
+          py -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu > pip_install_torch.txt 2>&1 || set TORCHEXIT=%ERRORLEVEL%
+          py -m pip install transformers sentencepiece >> pip_install_torch.txt 2>&1 || set TORCHEXIT=%ERRORLEVEL%
           type pip_install_torch.txt
           popd
+          if defined TORCHEXIT exit /b %TORCHEXIT%
         shell: cmd
 
       - name: Install PyInstaller
         run: |
-          pushd rabbit-system\worker
-          py -m pip install pyinstaller > pip_install_pyinstaller.txt 2>&1
+          pushd worker
+          py -m pip install pyinstaller > pip_install_pyinstaller.txt 2>&1 || set PYINSEXIT=%ERRORLEVEL%
           type pip_install_pyinstaller.txt
           popd
+          if defined PYINSEXIT exit /b %PYINSEXIT%
         shell: cmd
 
       - name: Build RabbitWorker.exe (capture output)
         env:
           ENABLE_TRANSLATION: ${{ env.ENABLE_TRANSLATION }}
         run: |
-          pushd rabbit-system\worker
-          REM capture build output even if fails
+          pushd worker
           call build.bat > build_output.txt 2>&1 || set BUILDEXIT=%ERRORLEVEL%
           type build_output.txt
           echo ==== DIST LIST ====
@@ -83,20 +89,27 @@ jobs:
             echo "dist folder not found"
           )
           popd
-          REM If build failed, propagate non-zero to mark job failed (optional)
           if defined BUILDEXIT exit /b %BUILDEXIT%
         shell: cmd
 
-      - name: Upload build_output and worker folder (always)
+      - name: Upload exe artifact (if exists)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RabbitWorker
+          path: worker/dist/RabbitWorker.exe
+          if-no-files-found: warn
+
+      - name: Upload build logs and diagnostics (always, warn if missing)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: RabbitWorker-build-logs-and-artifacts
           path: |
-            rabbit-system/worker/build_output.txt
-            rabbit-system/worker/pip_install_req.txt
-            rabbit-system/worker/pip_install_torch.txt
-            rabbit-system/worker/pip_install_pyinstaller.txt
-            rabbit-system/worker/worker_error.log
-            rabbit-system/worker/dist/**
-            rabbit-system/worker/**
+            worker/build_output.txt
+            worker/pip_install_req.txt
+            worker/pip_install_torch.txt
+            worker/pip_install_pyinstaller.txt
+            worker/worker_error.log
+            worker/dist/**
+          if-no-files-found: warn
