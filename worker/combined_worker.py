@@ -364,10 +364,15 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
             except Exception: pass
 
 # simple extraction helper
-def extract_text_from_html(html: str) -> str:
+def extract_text_from_html(html: str, url: str = "") -> str:
     """
     Extract novel content from HTML.
-    Tries multiple selectors to find the content area, with special handling for booktoki's layout.
+    Detects site type and applies appropriate parsing rules.
+    
+    Supports:
+    - syosetu: <div class="js-novel-text p-novel__text"> with <p id="L1">, <p id="L2">, etc.
+    - booktoki: <div id="novel_content"> with <p> tags
+    - generic: fallback to multiple selectors
     """
     try:
         soup = BeautifulSoup(html, "html.parser")
@@ -376,12 +381,74 @@ def extract_text_from_html(html: str) -> str:
         for el in soup(['script', 'style']):
             el.decompose()
         
-        # Cloudflare check: if no content found, might be challenge page
+        # Cloudflare check
         text_content = soup.get_text()
         if "just a moment" in text_content.lower() or "cf-challenge" in text_content.lower():
             log_error("Detected Cloudflare challenge page")
             return None
         
+        # Detect syosetu
+        is_syosetu = "syosetu" in url.lower() or soup.select_one('article.p-novel') is not None
+        
+        if is_syosetu:
+            log_info("Detected syosetu format, using specialized parser")
+            return _extract_syosetu(soup)
+        else:
+            log_info("Using generic parser (booktoki or other)")
+            return _extract_generic(soup)
+            
+    except Exception:
+        log_exception("extract_text_from_html failed")
+        return ""
+
+def _extract_syosetu(soup) -> str:
+    """
+    Extract content from syosetu format.
+    Looks for <div class="js-novel-text p-novel__text"> with <p id="L1">, <p id="L2">, etc.
+    """
+    try:
+        # Find the novel text container
+        text_container = soup.select_one('div.js-novel-text.p-novel__text')
+        if not text_container:
+            # Fallback to article
+            article = soup.select_one('article.p-novel')
+            if article:
+                text_container = article.select_one('.p-novel__text')
+        
+        if not text_container:
+            log_error("Could not find syosetu text container")
+            return ""
+        
+        # Extract paragraphs with id starting with "L" (L1, L2, L3, etc.)
+        ps = text_container.find_all('p')
+        texts = []
+        
+        for p in ps:
+            p_id = p.get('id', '')
+            # Only extract paragraphs with id like L1, L2, L3, etc.
+            if p_id and p_id.startswith('L') and p_id[1:].isdigit():
+                t = p.get_text()
+                # Keep whitespace as-is for syosetu (they use spaces/newlines for formatting)
+                if t:
+                    texts.append(t)
+        
+        if texts:
+            # Join with single newline to preserve original formatting
+            return "\n".join(texts)
+        else:
+            log_error("No paragraphs with L-id found in syosetu text container")
+            return text_container.get_text("\n", strip=True)
+            
+    except Exception:
+        log_exception("_extract_syosetu failed")
+        return ""
+
+def _extract_generic(soup) -> str:
+    """
+    Generic extraction for booktoki and other sites.
+    Tries multiple CSS selectors.
+    """
+    try:
         el = None
         # Try booktoki specific selector first
         for sel in ['div#novel_content', '#novel_content', '.novel_content', 
@@ -396,21 +463,36 @@ def extract_text_from_html(html: str) -> str:
             # fallback: largest text block
             return soup.get_text("\n", strip=True)
         
-        # Extract paragraphs
-        ps = el.find_all(['p', 'div', 'span'], recursive=True)
+        # Extract only p tags first (most reliable)
+        ps = el.find_all('p', recursive=True)
         texts = []
-        for p in ps:
-            # Skip empty or nav-like elements
-            t = p.get_text(separator=" ", strip=True)
-            if t and len(t) > 5:  # Skip very short text
-                texts.append(t)
+        
+        if ps:
+            # If we found p tags, use only those
+            for p in ps:
+                t = p.get_text(separator=" ", strip=True)
+                if t and len(t) > 5:  # Skip very short text
+                    texts.append(t)
+        else:
+            # Fallback: if no p tags, try direct text nodes in the element
+            for child in el.children:
+                if isinstance(child, str):
+                    t = child.strip()
+                    if t and len(t) > 5:
+                        texts.append(t)
+                elif child.name and child.name not in ['script', 'style']:
+                    # For non-paragraph elements, extract text
+                    t = child.get_text(separator=" ", strip=True)
+                    if t and len(t) > 5:
+                        texts.append(t)
         
         if texts:
             return "\n\n".join(texts)
         else:
             return el.get_text("\n", strip=True)
+            
     except Exception:
-        log_exception("extract_text_from_html failed")
+        log_exception("_extract_generic failed")
         return ""
 
 def save_text_file(dirpath, title, suffix, content):
@@ -462,7 +544,7 @@ def process_task(task: dict, server_url: str):
         except Exception:
             title = ""
 
-        original_text = extract_text_from_html(html)
+        original_text = extract_text_from_html(html, url)
         
         # If extraction returned None, it's a Cloudflare challenge page
         if original_text is None:
