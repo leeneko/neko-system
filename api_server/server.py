@@ -333,12 +333,14 @@ def web_chapters(request: Request, novel_id: int):
 def web_read(request: Request, chapter_id: int):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT title, content, next_url, novel_id FROM chapters WHERE id = %s", (chapter_id,))
+    cur.execute("SELECT title, content, next_url, novel_id, url FROM chapters WHERE id = %s", (chapter_id,))
     row = cur.fetchone()
     
-    if not row: return HTMLResponse("존재하지 않는 챕터입니다.")
+    if not row: 
+        conn.close()
+        return HTMLResponse("존재하지 않는 챕터입니다.")
     
-    title, content, next_url, novel_id = row
+    title, content, next_url, novel_id, chapter_url = row
     cur.execute("SELECT title FROM novels WHERE id = %s", (novel_id,))
     novel_title_row = cur.fetchone()
     novel_title = novel_title_row[0] if novel_title_row else "알 수 없음"
@@ -383,6 +385,7 @@ def web_read(request: Request, chapter_id: int):
         "next_chapter_id": next_chapter_id,
         "novel_id": novel_id,
         "chapter_id": chapter_id,
+        "chapter_url": chapter_url,
         "theme": get_theme(request)
     })
     response.set_cookie("last_novel_id", str(novel_id), max_age=60 * 60 * 24 * 365, path="/")
@@ -418,6 +421,23 @@ def web_refresh_novel(request: Request, novel_id: int):
     if not next_url.startswith("/"):
         next_url = "/web"
     return RedirectResponse(url=next_url)
+
+@app.get("/web/read/{chapter_id}/recrawl")
+def recrawl_chapter(request: Request, chapter_id: int):
+    """Mark a chapter for recrawl and redirect back to read"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT novel_id FROM chapters WHERE id = %s", (chapter_id,))
+        row = cur.fetchone()
+        if row:
+            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (chapter_id,))
+            conn.commit()
+    finally:
+        conn.close()
+    
+    # Redirect back to read page
+    return RedirectResponse(url=f"/web/read/{chapter_id}")
 
 @app.get("/web/refresh_all")
 def web_refresh_all(request: Request):

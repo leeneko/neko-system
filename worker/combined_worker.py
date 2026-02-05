@@ -365,22 +365,50 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
 
 # simple extraction helper
 def extract_text_from_html(html: str) -> str:
+    """
+    Extract novel content from HTML.
+    Tries multiple selectors to find the content area, with special handling for booktoki's layout.
+    """
     try:
         soup = BeautifulSoup(html, "html.parser")
+        
+        # Remove script and style elements
+        for el in soup(['script', 'style']):
+            el.decompose()
+        
+        # Cloudflare check: if no content found, might be challenge page
+        text_content = soup.get_text()
+        if "just a moment" in text_content.lower() or "cf-challenge" in text_content.lower():
+            log_error("Detected Cloudflare challenge page")
+            return None
+        
         el = None
-        for sel in ['#novel_content', '.novel_content', '#content', '.content']:
+        # Try booktoki specific selector first
+        for sel in ['div#novel_content', '#novel_content', '.novel_content', 
+                    'div.novel_content', '#content', '.content', 'div.content',
+                    'div.reading-body', '.reading-body', 'article', 'main']:
             el = soup.select_one(sel)
-            if el: break
+            if el:
+                log_info(f"Found content with selector: {sel}")
+                break
+        
         if not el:
-            # fallback: body text
+            # fallback: largest text block
             return soup.get_text("\n", strip=True)
-        # join paragraphs
-        ps = el.find_all(['p','div'])
+        
+        # Extract paragraphs
+        ps = el.find_all(['p', 'div', 'span'], recursive=True)
         texts = []
         for p in ps:
+            # Skip empty or nav-like elements
             t = p.get_text(separator=" ", strip=True)
-            if t: texts.append(t)
-        return "\n\n".join(texts) if texts else el.get_text("\n", strip=True)
+            if t and len(t) > 5:  # Skip very short text
+                texts.append(t)
+        
+        if texts:
+            return "\n\n".join(texts)
+        else:
+            return el.get_text("\n", strip=True)
     except Exception:
         log_exception("extract_text_from_html failed")
         return ""
@@ -435,6 +463,18 @@ def process_task(task: dict, server_url: str):
             title = ""
 
         original_text = extract_text_from_html(html)
+        
+        # If extraction returned None, it's a Cloudflare challenge page
+        if original_text is None:
+            log_error(f"Cloudflare challenge detected for {url}, will retry")
+            post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "cloudflare_challenge"})
+            cnt = _FAILURE_COUNTS.get(task_id, 0) + 1
+            _FAILURE_COUNTS[task_id] = cnt
+            backoff = min(5 * cnt, 60)
+            log_info(f"Task {task_id} backoff {backoff}s due to cloudflare (failure_count={cnt})")
+            time.sleep(backoff)
+            return
+        
         if not original_text.strip():
             log_error(f"No extracted text for {url}")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "no_text"})

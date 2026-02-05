@@ -1,98 +1,207 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{ title }} - 읽기</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }} - 읽기</title>
   <style>
-    /* Shared minimal theme & layout so read.html matches other pages */
-    :root{
-      --bg-paper: #fafafa;
-      --text-paper: #222;
-      --bg-light: #fff;
-      --text-light: #222;
-      --bg-dark: #0b0b0b;
-      --text-dark: #eee;
-      --accent: #2b7cff;
-      --max-width: 900px;
+    /* Theme variables matching chapters.html */
+    :root {
+      --bg: #f7f0e8;
+      --bg-accent: #efe3d7;
+      --text: #2a2118;
+      --muted: #6a5b4a;
+      --card: #fff9f2;
+      --border: #e5d6c7;
+      --accent: #c4681b;
     }
-    html,body{height:100%;margin:0;padding:0;font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",Arial,Helvetica,"Apple SD Gothic Neo",sans-serif;}
-    body[data-theme="paper"]{background:var(--bg-paper);color:var(--text-paper);}
-    body[data-theme="light"]{background:var(--bg-light);color:var(--text-light);}
-    body[data-theme="dark"]{background:var(--bg-dark);color:var(--text-dark);}
-    a{color:inherit}
-    .wrap, .container{max-width:var(--max-width);margin:20px auto;padding:18px;}
-    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
-    h1{font-size:20px;margin:6px 0 14px;}
-    .reader-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
-    .reader-toolbar .group{display:flex;gap:8px;align-items:center;}
-    .btn{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--accent);color:#fff;text-decoration:none;cursor:pointer;border:0;}
-    .btn.ghost{background:transparent;color:var(--accent);border:1px solid rgba(0,0,0,0.06);}
-    .content-area{font-size:16px;line-height:1.8;white-space:pre-wrap;}
-    .nav-buttons{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;}
-    #toast{visibility:hidden;min-width:200px;margin-left:-100px;background-color:rgba(0,0,0,0.85);color:#fff;text-align:center;border-radius:4px;padding:10px 14px;position:fixed;z-index:10000;left:50%;bottom:30px;font-size:14px;opacity:0;transition:opacity .2s ease-in-out;}
-    #toast.show{visibility:visible;opacity:1;}
-    select.font-select{padding:6px;border-radius:4px;}
+    body[data-theme="dark"] {
+      --bg: #0c0e12;
+      --bg-accent: #151822;
+      --text: #e5e7eb;
+      --muted: #9aa4b2;
+      --card: #151a24;
+      --border: #252c3a;
+      --accent: #ff9d44;
+    }
+    body[data-theme="light"] {
+      --bg: #f8fbff;
+      --bg-accent: #e9f2ff;
+      --text: #1b2430;
+      --muted: #5b6b7b;
+      --card: #ffffff;
+      --border: #d7e3f3;
+      --accent: #2563eb;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body {
+      font-family: "Iowan Old Style", "Charter", "Georgia", serif;
+      background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
+                  radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
+                  var(--bg);
+      color: var(--text);
+      padding: 22px 18px 36px;
+    }
+
+    .wrap { max-width: 720px; margin: 0 auto; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    h1 { font-size: 22px; margin: 0 0 12px 0; letter-spacing: -0.02em; }
+    
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .theme { display: flex; gap: 6px; }
+    
+    .reader-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 16px;
+      padding: 10px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    .toolbar-group { display: flex; gap: 6px; align-items: center; }
+    .toolbar-group label { font-size: 12px; color: var(--muted); }
+    
+    select, input[type="text"] {
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .content-area {
+      font-size: 16px;
+      line-height: 1.8;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin: 16px 0;
+    }
+
+    .translation-section {
+      margin-top: 20px;
+      padding: 12px;
+      background: var(--bg-accent);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    .translation-section h3 { margin: 0 0 10px 0; font-size: 16px; }
+
+    .nav-buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    #toast {
+      visibility: hidden;
+      min-width: 200px;
+      margin-left: -100px;
+      background-color: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      text-align: center;
+      border-radius: 4px;
+      padding: 10px 14px;
+      position: fixed;
+      z-index: 10000;
+      left: 50%;
+      bottom: 30px;
+      font-size: 14px;
+      opacity: 0;
+      transition: opacity 0.2s ease-in-out;
+    }
+    #toast.show { visibility: visible; opacity: 1; }
   </style>
 </head>
 <body data-theme="{{ theme }}">
   <div class="wrap">
+    <!-- Header with navigation -->
     <header>
-      <div style="display:flex;gap:12px;align-items:center;">
-        <a class="btn" href="/web">홈</a>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <a class="btn" href="/web">책장</a>
         <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
       </div>
       <div class="actions">
-        <a class="btn" href="/web/novel/{{ novel_id }}/refresh">새로고침</a>
+        <div class="theme">
+          <a class="btn" href="/web/theme/paper?next=/web/read/{{ chapter_id }}">Paper</a>
+          <a class="btn" href="/web/theme/dark?next=/web/read/{{ chapter_id }}">Dark</a>
+          <a class="btn" href="/web/theme/light?next=/web/read/{{ chapter_id }}">Light</a>
+        </div>
       </div>
     </header>
 
+    <!-- Reader toolbar -->
     <div class="reader-toolbar" role="toolbar" aria-label="reader controls">
-      <div class="group" id="nav-group">
-        {% if next_chapter_id %}
-          <a id="next-top" class="btn" href="/web/read/{{ next_chapter_id }}?view={{ view_mode }}">다음</a>
-        {% else %}
-          <a id="next-top" class="btn" href="javascript:void(0)" data-no-next="1">다음</a>
-        {% endif %}
-      </div>
-
-      <div class="group" id="view-group">
-        <label for="font-select" style="font-size:13px;color:inherit;">글꼴</label>
-        <select id="font-select" class="font-select">
+      <div class="toolbar-group">
+        <label for="font-select">글꼴</label>
+        <select id="font-select">
           <option value="">기본</option>
-          <option value="Noto Serif KR, serif">명조 계열</option>
+          <option value="'Noto Serif KR', serif">명조 계열</option>
           <option value="'Malgun Gothic', '맑은 고딕', Arial">맑은 고딕</option>
-          <option value="Courier New, monospace">등폭(코드)</option>
+          <option value="'Courier New', monospace">등폭(코드)</option>
         </select>
-        <button id="spacing-toggle" class="btn ghost">간격 보정</button>
       </div>
-
-      <div class="group" id="action-group">
-        <a id="download-btn" class="btn" href="/client/read/{{ chapter_id }}?download=1">다운로드</a>
+      <div class="toolbar-group">
+        <button id="spacing-toggle" class="btn">간격 보정</button>
+      </div>
+      <div class="toolbar-group">
+        <a id="recrawl-btn" class="btn" href="/web/read/{{ chapter_id }}/recrawl" title="잘못된 내용인 경우 다시 크롤링합니다">다시 크롤</a>
       </div>
     </div>
 
+    <!-- Chapter title -->
     <h1>{{ title }}</h1>
 
+    <!-- Main content -->
     <div id="content" class="content-area">
       {{ content | safe }}
     </div>
 
+    <!-- Translation if available -->
     {% if translated_content %}
-    <hr style="margin:18px 0;">
-    <h3>번역</h3>
-    <div id="translated" class="content-area">
-      {{ translated_content | safe }}
+    <div class="translation-section">
+      <h3>번역</h3>
+      <div id="translated" class="content-area">
+        {{ translated_content | safe }}
+      </div>
     </div>
     {% endif %}
 
+    <!-- Navigation buttons -->
     <div class="nav-buttons">
       {% if next_chapter_id %}
-        <a id="next-btn" class="btn" href="/web/read/{{ next_chapter_id }}?view={{ view_mode }}">다음</a>
+        <a id="next-btn" class="btn primary" href="/web/read/{{ next_chapter_id }}">다음</a>
       {% else %}
         <a id="next-btn" class="btn" href="javascript:void(0)" data-no-next="1">다음</a>
       {% endif %}
-      <a id="list-btn" class="btn ghost" href="/web/novel/{{ novel_id }}">목록</a>
+      <a id="list-btn" class="btn" href="/web/novel/{{ novel_id }}">목록</a>
     </div>
   </div>
 
@@ -100,59 +209,59 @@
 
   <script>
   (function(){
-    // ensure data-theme exists and fallback to cookie 'theme' or 'paper'
+    // Ensure data-theme exists and fallback to cookie
     try {
-      const allowed = new Set(['paper','dark','light']);
+      const allowed = new Set(['paper', 'dark', 'light']);
       const body = document.body;
       const current = body.getAttribute('data-theme');
-      if(!current || !allowed.has(current)){
+      if (!current || !allowed.has(current)) {
         const match = document.cookie.match(/(?:^|; )theme=([^;]+)/);
         const theme = match ? decodeURIComponent(match[1]) : null;
         const apply = allowed.has(theme) ? theme : 'paper';
         body.setAttribute('data-theme', apply);
       }
-    } catch(e){ console.warn('theme apply failed', e); }
+    } catch (e) { console.warn('theme apply failed', e); }
 
-    // font selection persistence
+    // Font selection persistence
     const fontSelect = document.getElementById('font-select');
     const content = document.getElementById('content');
-    if(fontSelect && content){
-      const saved = (function(){try{return localStorage.getItem('reader_font')}catch(e){return null}})();
-      if(saved){ fontSelect.value = saved; content.style.fontFamily = saved; }
-      fontSelect.addEventListener('change', function(){
+    if (fontSelect && content) {
+      const saved = (function() { try { return localStorage.getItem('reader_font'); } catch (e) { return null; } })();
+      if (saved) { fontSelect.value = saved; content.style.fontFamily = saved; }
+      fontSelect.addEventListener('change', function() {
         const f = fontSelect.value || '';
         content.style.fontFamily = f;
-        try{ localStorage.setItem('reader_font', f); }catch(e){}
+        try { localStorage.setItem('reader_font', f); } catch (e) {}
       });
     }
 
-    // spacing toggle uses same query param behavior
+    // Spacing toggle
     const spacingBtn = document.getElementById('spacing-toggle');
-    if(spacingBtn){
-      spacingBtn.addEventListener('click', function(){
+    if (spacingBtn) {
+      spacingBtn.addEventListener('click', function() {
         const params = new URLSearchParams(window.location.search);
         const current = params.get('spacing') === '1';
-        if(current) params.delete('spacing'); else params.set('spacing','1');
+        if (current) params.delete('spacing');
+        else params.set('spacing', '1');
         window.location.search = params.toString();
       });
     }
 
-    // next button behavior (toast then list)
-    function attachNext(btn){
-      if(!btn) return;
-      btn.addEventListener('click', function(e){
-        if(btn.getAttribute('data-no-next') === '1'){
+    // Next button behavior (toast then redirect if last chapter)
+    function attachNext(btn) {
+      if (!btn) return;
+      btn.addEventListener('click', function (e) {
+        if (btn.getAttribute('data-no-next') === '1') {
           e.preventDefault();
           const toast = document.getElementById('toast');
-          if(toast){ toast.classList.add('show'); }
-          setTimeout(function(){
-            if(toast){ toast.classList.remove('show'); }
+          if (toast) { toast.classList.add('show'); }
+          setTimeout(function() {
+            if (toast) { toast.classList.remove('show'); }
             window.location.href = '/web/novel/{{ novel_id }}';
           }, 1100);
         }
       });
     }
-    attachNext(document.getElementById('next-top'));
     attachNext(document.getElementById('next-btn'));
   })();
   </script>
