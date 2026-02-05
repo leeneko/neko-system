@@ -1,89 +1,47 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
-    <style>
-        :root {
-            --bg: #f7f0e8;
-            --bg-accent: #efe3d7;
-            --text: #2a2118;
-            --muted: #6a5b4a;
-            --card: #fff9f2;
-            --border: #e5d6c7;
-            --accent: #c4681b;
-        }
-        body[data-theme="dark"] {
-            --bg: #0c0e12;
-            --bg-accent: #151822;
-            --text: #e5e7eb;
-            --muted: #9aa4b2;
-            --card: #151a24;
-            --border: #252c3a;
-            --accent: #ff9d44;
-        }
-        body[data-theme="light"] {
-            --bg: #f8fbff;
-            --bg-accent: #e9f2ff;
-            --text: #1b2430;
-            --muted: #5b6b7b;
-            --card: #ffffff;
-            --border: #d7e3f3;
-            --accent: #2563eb;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: "Iowan Old Style", "Charter", "Georgia", serif;
-            background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
-                        radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
-                        var(--bg);
-            color: var(--text);
-            padding: 22px 18px 36px;
-        }
-        .wrap { max-width: 760px; margin: 0 auto; }
-        header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-        h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
-        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .toolbar { display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap; align-items:center; }
-        .toolbar .group { display:flex; gap:8px; align-items:center; }
-        .font-options { padding:6px; }
-        .content-area { font-family: var(--reader-font, "Noto Sans KR, Arial"); font-size:16px; line-height:1.8; }
-        .btn { padding:6px 10px; border-radius:4px; background:#2b7cff; color:#fff; text-decoration:none; cursor:pointer; border:none; }
-        #toast { visibility:hidden; min-width:200px; margin-left:-100px; background:rgba(0,0,0,0.85); color:#fff; text-align:center; border-radius:4px; padding:12px 18px; position:fixed; z-index:10000; left:50%; bottom:30px; font-size:14px; opacity:0; transition:opacity .2s ease-in-out; }
-        #toast.show { visibility:visible; opacity:1; }
-        .theme { display: flex; gap: 6px; }
-        .content {
-            margin: 18px 0 36px;
-            line-height: 1.85;
-            font-size: 17.5px;
-            background: var(--card);
-            border: 1px solid var(--border);
-            padding: 18px 16px;
-            border-radius: 14px;
-        }
-        .content-title {
-            font-size: 14px;
-            color: var(--muted);
-            margin: 0 0 10px;
-        }
-        .content + .content { margin-top: 14px; }
-        .nav { display: flex; gap: 10px; }
-        .nav button {
-            flex: 1;
-            padding: 14px;
-            background: var(--card);
-            color: var(--text);
-            border: 1px solid var(--border);
-            font-size: 15px;
-            border-radius: 12px;
-        }
-    </style>
+  <meta charset="utf-8">
+  <title>{{ title }} - 읽기</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <!-- use global stylesheet (do not override) -->
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* Minimal, non-invasive styles for toolbar / toast only.
+       Avoid overriding global typography or theme variables. */
+    .reader-toolbar { display:flex; gap:12px; margin:10px 0 14px; flex-wrap:wrap; align-items:center; }
+    .reader-toolbar .group { display:flex; gap:8px; align-items:center; }
+    .reader-toolbar .btn { padding:6px 10px; border-radius:4px; cursor:pointer; }
+    .font-select { padding:6px; }
+    .content-area { /* do not force font-family; defer to global CSS */ font-size:16px; line-height:1.8; }
+    #toast {
+      visibility: hidden;
+      min-width: 200px;
+      margin-left: -100px;
+      background-color: rgba(0,0,0,0.85);
+      color: #fff;
+      text-align: center;
+      border-radius: 4px;
+      padding: 10px 14px;
+      position: fixed;
+      z-index: 10000;
+      left: 50%;
+      bottom: 30px;
+      font-size: 14px;
+      opacity: 0;
+      transition: opacity .2s ease-in-out, visibility 0s linear .2s;
+    }
+    #toast.show {
+      visibility: visible;
+      opacity: 1;
+      transition-delay: 0s;
+    }
+  </style>
 </head>
 <body class="{{ theme }}">
   <div class="container">
-    <div class="toolbar" role="toolbar" aria-label="reader controls">
+    <!-- Toolbar: uses global visual tokens from style.css -->
+    <div class="reader-toolbar" role="toolbar" aria-label="reader controls">
       <div class="group" id="nav-group">
         <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
         {% if next_chapter_id %}
@@ -94,9 +52,9 @@
       </div>
 
       <div class="group" id="view-group">
-        <label for="font-select" style="font-size:13px;color:#333;">글꼴</label>
-        <select id="font-select" class="font-options">
-          <option value="Noto Sans KR, Arial">기본</option>
+        <label for="font-select" style="font-size:13px;color:inherit;margin-right:6px;">글꼴</label>
+        <select id="font-select" class="font-select">
+          <option value="">기본</option>
           <option value="Noto Serif KR, serif">명조 계열</option>
           <option value="'Malgun Gothic', '맑은 고딕', Arial">맑은고딕</option>
           <option value="Courier New, monospace">등폭(코드)</option>
@@ -137,15 +95,18 @@
 
   <script>
   (function(){
+    // font selection: apply inline style only to content area (non-invasive)
     const fontSelect = document.getElementById('font-select');
     const content = document.getElementById('content');
-    const spacingBtn = document.getElementById('spacing-toggle');
-
     function applyFont(f){
-      document.documentElement.style.setProperty('--reader-font', f);
-      try { localStorage.setItem('reader_font', f); } catch(e){}
+      if(!content) return;
+      if(!f) {
+        content.style.fontFamily = '';
+      } else {
+        content.style.fontFamily = f;
+      }
+      try { localStorage.setItem('reader_font', f || ''); } catch(e){}
     }
-
     fontSelect.addEventListener('change', ()=> applyFont(fontSelect.value));
     const savedFont = (function(){ try{ return localStorage.getItem('reader_font'); }catch(e){return null;} })();
     if(savedFont){
@@ -153,6 +114,8 @@
       applyFont(savedFont);
     }
 
+    // spacing toggle uses existing server param behavior
+    const spacingBtn = document.getElementById('spacing-toggle');
     spacingBtn.addEventListener('click', ()=>{
       const params = new URLSearchParams(window.location.search);
       const current = params.get('spacing') === '1';

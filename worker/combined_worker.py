@@ -159,42 +159,103 @@ def safe_filename(s: str) -> str:
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     try:
         headers = {
-            # realistic browser UA to avoid simple bot blocks
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
             "Referer": DEFAULT_OCI_URL,
             "Accept-Language": "en-US,en;q=0.9"
         }
         s = requests.Session()
         r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        r.raise_for_status()
-        return r.text
-    except requests.exceptions.HTTPError as e:
+        # if OK, return
+        if r.status_code == 200:
+            return r.text
+        # log non-200 (403 handled below)
+        log_error(f"Failed to fetch url: {url} (HTTP {r.status_code}) body={r.text[:500]}")
+        # if not 403, give up
+        if r.status_code != 403:
+            try:
+                r.raise_for_status()
+            except Exception:
+                pass
+            return None
+    except requests.exceptions.RequestException as e:
+        # capture status if available
         status = None
         try:
-            status = e.response.status_code
+            status = e.response.status_code if getattr(e, "response", None) is not None else None
         except Exception:
             status = None
         log_error(f"Failed to fetch url: {url} (HTTP {status})")
-        # if 403 and DrissionPage available, try a headless browser to bypass simple blocks
-        if status == 403 and HAS_DRISSION:
+        # proceed to headless attempt only for 403
+        if status != 403:
+            log_exception(f"requests exception for {url}")
+            return None
+
+    # If we reach here, we either saw a 403 or a requests exception with 403 -> try headless if available
+    if status == 403 or 'r' in locals() and getattr(r, "status_code", None) == 403:
+        if HAS_DRISSION:
             try:
                 log_info(f"Attempting headless fetch for {url} via DrissionPage")
-                opts = ChromiumOptions()
-                opts.headless = True
-                page = ChromiumPage(options=opts)
-                page.get(url)
-                html = page.get_page_source()
+                # prepare options if available
+                opts = None
                 try:
-                    page.quit()
+                    opts = ChromiumOptions()
+                    # ensure headless flag present
+                    try:
+                        opts.headless = True
+                    except Exception:
+                        pass
                 except Exception:
-                    pass
-                return html
+                    opts = None
+
+                page = None
+                # try multiple constructor patterns to handle API differences
+                constructors = []
+                if opts is not None:
+                    constructors.append(lambda: ChromiumPage(options=opts))
+                    constructors.append(lambda: ChromiumPage(opts))
+                constructors.append(lambda: ChromiumPage())
+                constructors.append(lambda: ChromiumPage(True))
+                last_exc = None
+                for ctor in constructors:
+                    try:
+                        page = ctor()
+                        break
+                    except TypeError as te:
+                        last_exc = te
+                        continue
+                    except Exception as ex:
+                        # other exceptions may indicate missing binary etc.
+                        last_exc = ex
+                        continue
+
+                if page is None:
+                    log_error(f"DrissionPage instantiation failed, last error: {repr(last_exc)}")
+                    return None
+
+                # fetch content
+                try:
+                    page.get(url)
+                    html = page.get_page_source()
+                    try:
+                        page.quit()
+                    except Exception:
+                        pass
+                    return html
+                except Exception:
+                    log_exception("DrissionPage fetch failed during page.get/get_page_source")
+                    try:
+                        page.quit()
+                    except Exception:
+                        pass
+                    return None
             except Exception:
-                log_exception("DrissionPage fetch failed")
-        return None
-    except Exception:
-        log_exception(f"Failed to fetch url: {url}")
-        return None
+                log_exception("DrissionPage overall fetch failed")
+                return None
+        else:
+            log_error("403 received and DrissionPage not available; skipping headless attempt")
+            return None
+
+    return None
 
 def extract_text_from_html(html: str) -> str:
     try:
