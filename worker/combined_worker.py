@@ -1,4 +1,3 @@
-# ...existing code...
 import os
 import sys
 import time
@@ -22,13 +21,15 @@ except Exception:
 # Configuration
 CONFIG_FILE = "config.txt"
 DEFAULT_OCI_URL = "http://144.24.87.146:8001"
-# endpoints
+# Endpoints
 POLL_ENDPOINT = os.environ.get("OCI_POLL_ENDPOINT", "/worker/get")
 RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/worker/submit")
 FAIL_ENDPOINT = os.environ.get("OCI_FAIL_ENDPOINT", "/worker/fail")
 TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "facebook/mbart-large-50-many-to-many-mmt")
+TRANSLATION_ENGINE = os.environ.get("TRANSLATION_ENGINE", "mbart50")
 ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "1") == "1"
 MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
+
 
 # Base dir: executable location when frozen, otherwise source dir
 _base_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
@@ -157,6 +158,7 @@ def safe_filename(s: str) -> str:
     return s[:120]
 
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
+    status = None
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -165,88 +167,71 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
         }
         s = requests.Session()
         r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        # if OK, return
-        if r.status_code == 200:
+        status = getattr(r, "status_code", None)
+        if status == 200:
             return r.text
-        # log non-200 (403 handled below)
-        log_error(f"Failed to fetch url: {url} (HTTP {r.status_code}) body={r.text[:500]}")
-        # if not 403, give up
-        if r.status_code != 403:
-            try:
-                r.raise_for_status()
-            except Exception:
-                pass
+        # log non-200 body snippet for debugging (e.g., Cloudflare "Just a moment...")
+        log_error(f"Failed to fetch url: {url} (HTTP {status}) body={getattr(r,'text','')[:500]}")
+        # only attempt headless on 403; otherwise give up
+        if status != 403:
             return None
     except requests.exceptions.RequestException as e:
-        # capture status if available
-        status = None
+        # ensure status defined from exception if possible
         try:
             status = e.response.status_code if getattr(e, "response", None) is not None else None
         except Exception:
             status = None
         log_error(f"Failed to fetch url: {url} (HTTP {status})")
-        # proceed to headless attempt only for 403
+        # only try headless on 403
         if status != 403:
             log_exception(f"requests exception for {url}")
             return None
 
-    # If we reach here, we either saw a 403 or a requests exception with 403 -> try headless if available
-    if status == 403 or 'r' in locals() and getattr(r, "status_code", None) == 403:
+    # At this point, status indicates 403 -> try headless if available
+    if status == 403:
         if HAS_DRISSION:
             try:
                 log_info(f"Attempting headless fetch for {url} via DrissionPage")
-                # prepare options if available
+                # attempt multiple constructor patterns for ChromiumPage
                 opts = None
                 try:
                     opts = ChromiumOptions()
-                    # ensure headless flag present
-                    try:
-                        opts.headless = True
-                    except Exception:
-                        pass
+                    try: opts.headless = True
+                    except Exception: pass
                 except Exception:
                     opts = None
 
                 page = None
-                # try multiple constructor patterns to handle API differences
                 constructors = []
                 if opts is not None:
                     constructors.append(lambda: ChromiumPage(options=opts))
                     constructors.append(lambda: ChromiumPage(opts))
                 constructors.append(lambda: ChromiumPage())
                 constructors.append(lambda: ChromiumPage(True))
+
                 last_exc = None
                 for ctor in constructors:
                     try:
                         page = ctor()
                         break
-                    except TypeError as te:
-                        last_exc = te
-                        continue
                     except Exception as ex:
-                        # other exceptions may indicate missing binary etc.
                         last_exc = ex
                         continue
 
                 if page is None:
-                    log_error(f"DrissionPage instantiation failed, last error: {repr(last_exc)}")
+                    log_error(f"DrissionPage instantiation failed: {repr(last_exc)}")
                     return None
 
-                # fetch content
                 try:
                     page.get(url)
                     html = page.get_page_source()
-                    try:
-                        page.quit()
-                    except Exception:
-                        pass
+                    try: page.quit()
+                    except Exception: pass
                     return html
                 except Exception:
                     log_exception("DrissionPage fetch failed during page.get/get_page_source")
-                    try:
-                        page.quit()
-                    except Exception:
-                        pass
+                    try: page.quit()
+                    except Exception: pass
                     return None
             except Exception:
                 log_exception("DrissionPage overall fetch failed")
