@@ -23,9 +23,6 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          # [중요 변경 1] CUDA 버전 대신 CPU 전용 버전을 설치합니다.
-          # torchvision, torchaudio는 이미지/오디오 처리를 안 한다면 빼는 게 용량에 더 좋습니다. (일단 포함함)
-          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
           
           # 나머지 라이브러리 설치
           pip install transformers sentencepiece DrissionPage requests pyinstaller
@@ -34,9 +31,6 @@ jobs:
         shell: pwsh
         run: |
           cd worker
-          # [중요 변경 2] --clean 옵션 추가 (캐시 문제 방지)
-          # transformers와 torch는 --collect-all을 해야 실행 에러가 안 날 확률이 높습니다.
-          # CPU 버전을 설치했으므로 --collect-all torch를 해도 용량이 크지 않습니다.
           pyinstaller --onefile --noconsole --clean --name "RabbitWorker" `
             --collect-all transformers `
             --collect-all sentencepiece `
@@ -48,5 +42,4 @@ jobs:
         with:
           name: RabbitWorker
           path: worker/dist/RabbitWorker.exe
-          # [선택] 압축 레벨을 높여서 업로드 속도 향상
           compression-level: 9
