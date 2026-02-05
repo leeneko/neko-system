@@ -1,4 +1,4 @@
-name: Windows build
+name: Windows build (RabbitWorker with translation)
 
 on:
   push:
@@ -37,49 +37,66 @@ jobs:
           py -m pip install --upgrade pip
         shell: cmd
 
+      - name: Show worker folder before install (diagnostic)
+        run: |
+          dir /b
+          dir rabbit-system\worker /a
+        shell: cmd
+
       - name: Install worker requirements
         run: |
           pushd rabbit-system\worker
-          py -m pip install -r requirements.txt
+          py -m pip install -r requirements.txt > pip_install_req.txt 2>&1
+          type pip_install_req.txt
           popd
         shell: cmd
 
       - name: Install CPU PyTorch and transformers (translation)
         run: |
           pushd rabbit-system\worker
-          py -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-          py -m pip install transformers sentencepiece
+          py -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu > pip_install_torch.txt 2>&1 || (type pip_install_torch.txt & exit /b %ERRORLEVEL%)
+          py -m pip install transformers sentencepiece >> pip_install_torch.txt 2>&1 || (type pip_install_torch.txt & exit /b %ERRORLEVEL%)
+          type pip_install_torch.txt
           popd
         shell: cmd
 
       - name: Install PyInstaller
         run: |
           pushd rabbit-system\worker
-          py -m pip install pyinstaller
+          py -m pip install pyinstaller > pip_install_pyinstaller.txt 2>&1
+          type pip_install_pyinstaller.txt
           popd
         shell: cmd
 
-      - name: Build RabbitWorker.exe (run build.bat)
+      - name: Build RabbitWorker.exe (capture output)
         env:
           ENABLE_TRANSLATION: ${{ env.ENABLE_TRANSLATION }}
         run: |
           pushd rabbit-system\worker
-          call build.bat
+          REM capture build output even if fails
+          call build.bat > build_output.txt 2>&1 || set BUILDEXIT=%ERRORLEVEL%
+          type build_output.txt
+          echo ==== DIST LIST ====
+          if exist dist (
+            dir dist /s /b
+          ) else (
+            echo "dist folder not found"
+          )
           popd
+          REM If build failed, propagate non-zero to mark job failed (optional)
+          if defined BUILDEXIT exit /b %BUILDEXIT%
         shell: cmd
 
-      - name: Upload exe artifact
+      - name: Upload build_output and worker folder (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RabbitWorker
-          path: rabbit-system/worker/dist/RabbitWorker.exe
-
-      - name: Upload build artifacts and logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: RabbitWorker-artifacts
+          name: RabbitWorker-build-logs-and-artifacts
           path: |
-            rabbit-system/worker/dist/**
+            rabbit-system/worker/build_output.txt
+            rabbit-system/worker/pip_install_req.txt
+            rabbit-system/worker/pip_install_torch.txt
+            rabbit-system/worker/pip_install_pyinstaller.txt
             rabbit-system/worker/worker_error.log
+            rabbit-system/worker/dist/**
+            rabbit-system/worker/**
