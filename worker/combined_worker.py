@@ -1073,8 +1073,8 @@ def process_task(task: dict, server_url: str):
         log_info(f"   Original text: {len(original_text)} chars")
         log_info(f"   Translation: {len(translated) if translated else 0} chars")
         log_info(f"   Combined file: {combined_path}")
-        if next_url:
-            log_info(f"   Next chapter: {next_url}")
+        if normalized_next:
+            log_info(f"   Next chapter: {normalized_next}")
         else:
             log_info(f"   Status: 🏁 LAST CHAPTER (no next URL)")
         log_info(f"="*70 + "\n")
