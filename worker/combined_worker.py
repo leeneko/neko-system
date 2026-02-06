@@ -1,3 +1,37 @@
+"""
+================================================================================
+🐇 Rabbit System - Combined Worker (combined_worker.py)
+================================================================================
+
+목적:
+  - OCI 서버와 통신하며 소설 다운로드, 추출, 번역을 자동화하는 워커
+  - 부트토키(booktoki), 소세츠(syosetu) 등 다양한 사이트 지원
+  - Cloudflare/CAPTCHA 자동 우회 (DrissionPage 브라우저 자동화)
+  - 프록시 로테이션 및 지수백오프를 이용한 안티매크로 방지
+  - 라운드-로빈 방식으로 여러 소설 작업을 번갈아 처리
+
+작동 흐름:
+  1. OCI 서버에서 작업 조회 (get_next_task)
+  2. URL 크롤링 (fetch_html) - 실패 시 브라우저 자동화 사용
+  3. HTML에서 소설 본문 추출 (extract_text_from_html)
+  4. 다음 챕터 링크 추출 (extract_next_url)
+  5. 선택적 번역 (Hugging Face transformers)
+  6. 파일 저장 및 결과 전송 (post_result)
+  7. 라운드-로빈으로 다음 소설 작업 처리
+
+환경변수:
+  - OCI_SERVER_URL: OCI 서버 주소 (예: http://144.24.87.146:8001)
+  - PROXY_LIST: 프록시 리스트 (;로 구분, 예: http://p1:8080;http://p2:8080)
+  - ENABLE_TRANSLATION: 번역 활성화 (True/False)
+  - TRANSLATE_MODEL: 번역 모델 (예: Helsinki-NLP/opus-mt-ja-ko)
+  - MAX_CHARS: 한 번에 번역할 최대 문자 수 (예: 512)
+  - DRISSION_PORT: 드래싱페이지 Chrome 포트 (기본값: 9222)
+  - DRISSION_MANUAL_WAIT: CAPTCHA 대기 시간(초) (기본값: 600)
+  - WORKER_BUFFER_SIZE: 한 번에 미리 로드할 작업 수 (기본값: 10)
+
+================================================================================
+"""
+
 import os
 import sys
 import time
@@ -9,24 +43,111 @@ import subprocess
 import random
 import re
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
-# logging helpers
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-def log_info(msg): logging.info(msg)
-def log_error(msg): logging.error(msg)
-def log_exception(msg): logging.exception(msg)
 
-# DrissionPage optional
+# ============================================================================
+# 로깅 설정
+# ============================================================================
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+def log_info(msg): 
+    """정보 로그 출력"""
+    logging.info(msg)
+
+def log_error(msg): 
+    """에러 로그 출력"""
+    logging.error(msg)
+
+def log_exception(msg): 
+    """예외 로그 출력 (스택 트레이스 포함)"""
+    logging.exception(msg)
+
+# ============================================================================
+# DrissionPage 선택적 설치 (브라우저 자동화 - Cloudflare 우회용)
+# ============================================================================
+# DrissionPage: Selenium 대비 빠르고 강력한 브라우저 자동화 라이브러리
+# 없으면 requests만 사용하고 403/Cloudflare 감지 시 요청 실패
+
 try:
     from DrissionPage import ChromiumPage, ChromiumOptions
     HAS_DRISSION = True
+    log_info("✓ DrissionPage 설치됨 (Cloudflare 우회 가능)")
 except Exception:
     ChromiumPage = None
     ChromiumOptions = None
     HAS_DRISSION = False
+    log_info("✗ DrissionPage 미설치 (requests만 사용)")
+
+# ============================================================================
+# 전역 설정
+# ============================================================================
+
+# 기본 OCI 서버 주소
+DEFAULT_OCI_URL = os.environ.get("OCI_SERVER_URL", "http://144.24.87.146:8001")
+
+# 실행 파일 기본 경로 (PyInstaller EXE 또는 Python 스크립트)
+_base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
+# 프록시 리스트 (환경변수에서 ;로 구분된 프록시 목록)
+PROXY_LIST = []
+if os.environ.get("PROXY_LIST"):
+    PROXY_LIST = [p.strip() for p in os.environ.get("PROXY_LIST", "").split(";") if p.strip()]
+
+# 번역 설정
+ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "False").lower() == "true"
+TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "Helsinki-NLP/opus-mt-ja-ko")
+MAX_CHARS = int(os.environ.get("MAX_CHARS", "512"))
+TRANSLATION_ENGINE = "transformers"
+
+# DrissionPage (브라우저) 설정
+DRISSION_PORT = int(os.environ.get("DRISSION_PORT", "9222"))
+BROWSER_PAGE = None  # 전역 브라우저 페이지 객체 (재사용)
+
+# 워커 설정
+_FAILURE_COUNTS = {}  # 작업별 실패 횟수 (재시도 지수백오프용)
+
+# ============================================================================
+# BeautifulSoup 설치 확인
+# ============================================================================
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("❌ BeautifulSoup4 필수: pip install beautifulsoup4")
+    sys.exit(1)
+
+# ============================================================================
+# 필수 함수: load_server_url()
+# ============================================================================
+
+def load_server_url():
+    """
+    OCI 서버 주소 로드
+    
+    우선순위:
+    1. 환경변수 OCI_SERVER_URL
+    2. 현재 디렉토리의 config.txt 파일
+    3. 기본값 (DEFAULT_OCI_URL)
+    
+    반환값:
+      - 서버 주소 (예: http://144.24.87.146:8001)
+    """
+    url = DEFAULT_OCI_URL
+    
+    # config.txt에서 읽기 (로컬 설정)
+    config_file = os.path.join(_base_dir, "config.txt")
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content.startswith("http"):
+                    url = content
+                    log_info(f"✓ config.txt에서 서버 주소 로드: {url}")
+        except Exception as e:
+            log_error(f"config.txt 읽기 실패: {e}")
+    
+    return url
 
 # Worker endpoints (can be overridden via env vars)
 GET_ENDPOINT = os.environ.get("OCI_GET_ENDPOINT", "/worker/get")

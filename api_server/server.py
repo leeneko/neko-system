@@ -1,25 +1,94 @@
+"""
+================================================================================
+🌐 Rabbit System API Server (server.py)
+================================================================================
+
+목적:
+  - FastAPI 기반 중계 서버 (OCI 클라우드)
+  - 클라이언트(회사 PC)와 워커(집 PC) 간의 통신 중계
+  - PostgreSQL 데이터베이스 관리
+  - 웹 UI (Jinja2 템플릿) 제공
+
+역할:
+  1. 클라이언트 ← API: 소설 목록, 챕터 조회, 읽기
+  2. 워커 ↔ API: 작업 큐 관리, 결과 수집
+  3. DB: 소설/챕터/장르/사용자 정보 저장
+
+주요 기능:
+  - 웹 UI (chapters.html, read.html)
+  - REST API (/api/*, /client/*, /worker/*, /web/*)
+  - 한글 띄어쓰기 자동 보정 (pykospacing)
+  - 테마 지원 (paper, dark, light)
+  - 다국어 장르 관리
+  - 재크롤 기능
+
+기술:
+  - FastAPI: 웹 프레임워크
+  - psycopg2: PostgreSQL 드라이버
+  - Jinja2: 템플릿 엔진
+  - pykospacing: 한글 띄어쓰기
+
+데이터베이스 연결:
+  - host: localhost (Docker 내부)
+  - port: 5432
+  - database: rabbit_novel
+  - user: root
+  - password: neko15746+
+
+================================================================================
+"""
+
 from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psycopg2
 import os
 import json
 from urllib.parse import quote, unquote
 from typing import Optional, List
+import logging
+
+# ============================================================================
+# 로깅 설정
+# ============================================================================
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# 한글 띄어쓰기 자동 보정 (선택)
+# ============================================================================
 
 try:
     from pykospacing import Spacing
+    logger.info("✓ pykospacing 설치됨 (한글 띄어쓰기 자동 보정)")
 except Exception:
     Spacing = None
+    logger.info("✗ pykospacing 미설치 (띄어쓰기 보정 안 함)")
 
-app = FastAPI()
+# ============================================================================
+# FastAPI 앱 초기화
+# ============================================================================
 
-# 템플릿 설정 (모바일 웹용)
+app = FastAPI(title="Rabbit Novel System", version="3.0")
+
+# ============================================================================
+# 템플릿 및 정적 파일 설정
+# ============================================================================
+
+# Jinja2 템플릿 디렉토리 (HTML 파일들)
 templates = Jinja2Templates(directory="templates")
+
+# 지원 테마 목록
 THEMES = {"paper", "dark", "light"}
+
+# 최근 읽은 책 쿠키 설정
 RECENT_COOKIE = "recent_reads"
 RECENT_LIMIT = 20
+
+# 글로벌 띄어쓰기 모델 (처음 사용 시 로드)
 _spacing_model = None
 
 def apply_spacing(text: str) -> str:
