@@ -27,77 +27,7 @@ except Exception:
     ChromiumPage = None
     ChromiumOptions = None
     HAS_DRISSION = False
-        # Buffer size controls how many tasks we prefetch into per-novel queues
-        buffer_size = int(os.environ.get("WORKER_BUFFER_SIZE", "10"))
-        log_info(f"Using per-novel buffer_size={buffer_size} and sequential round-robin processing")
-
-        # Mapping: novel_id -> deque(tasks)
-        task_queues = {}
-        # Rotation order (list of novel_id)
-        rotation = []
-        rot_idx = 0
-
-        try:
-            while True:
-                try:
-                    # Pre-fill buffer up to buffer_size
-                    total_buffered = sum(len(q) for q in task_queues.values())
-                    while total_buffered < buffer_size:
-                        task = get_next_task(server_url)
-                        if not task:
-                            break
-                        novel_id = task.get("novel_id") or str(task.get("url") or "unknown_novel")
-                        novel_id = str(novel_id)
-                        if novel_id not in task_queues:
-                            task_queues[novel_id] = deque()
-                            rotation.append(novel_id)
-                        task_queues[novel_id].append(task)
-                        total_buffered += 1
-                        log_info(f"Buffered task {task.get('id')} for novel {novel_id} (total_buffered={total_buffered})")
-
-                    # If no buffered tasks, wait briefly and retry
-                    if not rotation:
-                        time.sleep(2)
-                        continue
-
-                    # Select next novel in rotation
-                    if rot_idx >= len(rotation):
-                        rot_idx = 0
-                    current_novel = rotation[rot_idx]
-
-                    # If queue empty (possible due to removal), advance
-                    if current_novel not in task_queues or not task_queues[current_novel]:
-                        # remove from rotation
-                        try:
-                            rotation.pop(rot_idx)
-                        except Exception:
-                            rot_idx = (rot_idx + 1) % (len(rotation) or 1)
-                        continue
-
-                    task = task_queues[current_novel].popleft()
-                    if not task_queues[current_novel]:
-                        # remove empty queue from rotation
-                        task_queues.pop(current_novel, None)
-                        rotation.pop(rot_idx)
-                    else:
-                        rot_idx = (rot_idx + 1) % len(rotation)
-
-                    task_id = task.get("id", "")
-                    log_info(f"Processing task {task_id} from novel {current_novel} (round-robin)")
-                    process_task(task, server_url)
-
-                    # Small random delay between tasks to avoid macro detection
-                    jitter = random.uniform(5.0, 12.0)
-                    time.sleep(jitter)
-
-                except KeyboardInterrupt:
-                    log_info("Keyboard interrupt, exiting main loop")
-                    break
-                except Exception:
-                    log_exception("Main loop error")
-                    time.sleep(5)
-        finally:
-            log_info("Worker shutting down")
+    HAS_DRISSION = False
 
 
                 if "chapter_id" in j and "url" in j:
@@ -799,58 +729,79 @@ def main():
     server_url = load_server_url()
     init_drission_connection()
     log_info("Worker started")
-    
-    # 환경변수로 워커 스레드 수 설정 (기본값: 3)
-    max_workers = int(os.environ.get("WORKER_THREADS", "3"))
-    log_info(f"Starting with {max_workers} parallel worker threads")
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}  # future -> task_id mapping for tracking
-        
+
+    # Buffer size controls how many tasks we prefetch into per-novel queues
+    buffer_size = int(os.environ.get("WORKER_BUFFER_SIZE", "10"))
+    log_info(f"Using per-novel buffer_size={buffer_size} and sequential round-robin processing")
+
+    # Mapping: novel_id -> deque(tasks)
+    task_queues = {}
+    # Rotation order (list of novel_id)
+    rotation = []
+    rot_idx = 0
+
+    try:
         while True:
             try:
-                # 완료된 future 처리 및 정리
-                done_futures = []
-                for future in list(futures.keys()):
-                    if future.done():
-                        try:
-                            future.result()  # Get result to catch any exceptions
-                        except Exception as e:
-                            log_error(f"Task {futures[future]} raised exception: {e}")
-                        done_futures.append(future)
-                        del futures[future]
-                
-                # 활성 task 개수 확인
-                active_count = len(futures)
-                
-                # 워커 스레드가 모두 사용 중이 아니면 새 task 폴링
-                if active_count < max_workers:
+                # Pre-fill buffer up to buffer_size
+                total_buffered = sum(len(q) for q in task_queues.values())
+                while total_buffered < buffer_size:
                     task = get_next_task(server_url)
-                    if task:
-                        task_id = task.get("id", "unknown")
-                        log_info(f"Submitting task {task_id} to thread pool (active: {active_count}/{max_workers})")
-                        future = executor.submit(process_task, task, server_url)
-                        futures[future] = task_id
-                    else:
-                        # No new task available, wait a bit
-                        time.sleep(1)
-                else:
-                    # All workers busy, wait before polling again
-                    log_info(f"All {max_workers} workers busy, waiting for task completion")
+                    if not task:
+                        break
+                    novel_id = task.get("novel_id") or str(task.get("url") or "unknown_novel")
+                    novel_id = str(novel_id)
+                    if novel_id not in task_queues:
+                        task_queues[novel_id] = deque()
+                        rotation.append(novel_id)
+                    task_queues[novel_id].append(task)
+                    total_buffered += 1
+                    log_info(f"Buffered task {task.get('id')} for novel {novel_id} (total_buffered={total_buffered})")
+
+                # If no buffered tasks, wait briefly and retry
+                if not rotation:
                     time.sleep(2)
-                    
-            except KeyboardInterrupt:
-                log_info("Keyboard interrupt, waiting for active tasks to complete...")
-                # Wait for remaining tasks to complete
-                for future in futures.keys():
+                    continue
+
+                # Select next novel in rotation
+                if rot_idx >= len(rotation):
+                    rot_idx = 0
+                current_novel = rotation[rot_idx]
+
+                # If queue empty (possible due to removal), advance
+                if current_novel not in task_queues or not task_queues[current_novel]:
+                    # remove from rotation
                     try:
-                        future.result(timeout=300)
+                        rotation.pop(rot_idx)
                     except Exception:
-                        pass
+                        rot_idx = (rot_idx + 1) % (len(rotation) or 1)
+                    continue
+
+                task = task_queues[current_novel].popleft()
+                if not task_queues[current_novel]:
+                    # remove empty queue from rotation
+                    task_queues.pop(current_novel, None)
+                    rotation.pop(rot_idx)
+                else:
+                    rot_idx = (rot_idx + 1) % len(rotation)
+
+                task_id = task.get("id", "")
+                log_info(f"Processing task {task_id} from novel {current_novel} (round-robin)")
+                process_task(task, server_url)
+
+                # Small random delay between tasks to avoid macro detection
+                jitter = random.uniform(5.0, 12.0)
+                time.sleep(jitter)
+
+            except KeyboardInterrupt:
+                log_info("Keyboard interrupt, exiting main loop")
                 break
             except Exception:
                 log_exception("Main loop error")
                 time.sleep(5)
+    finally:
+        log_info("Worker shutting down")
+
 
 if __name__ == "__main__":
     main()
