@@ -51,6 +51,16 @@ from collections import deque
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# Add file handler to write logs to error.log
+try:
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "error.log")
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+except Exception as e:
+    print(f"Warning: Could not set up file logging: {e}")
+
 def log_info(msg): 
     """정보 로그 출력"""
     logging.info(msg)
@@ -885,10 +895,26 @@ def process_task(task: dict, server_url: str):
             log_info(f"✓ Next chapter URL: {next_url}")
 
         translated = ""
-        log_info(f"Translation config: ENABLE_TRANSLATION={ENABLE_TRANSLATION}, MODEL={TRANSLATE_MODEL}, MAX_CHARS={MAX_CHARS}")
         
-        if ENABLE_TRANSLATION:
+        # Detect if this is syosetu (Japanese site) - only translate for syosetu
+        is_syosetu = "syosetu" in url.lower() or url.lower().endswith(".com")
+        is_syosetu_by_html = False
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            is_syosetu_by_html = soup.select_one('article.p-novel') is not None
+        except Exception:
+            pass
+        
+        is_syosetu = is_syosetu or is_syosetu_by_html
+        
+        if is_syosetu:
+            log_info(f"📖 [SYOSETU] Translation config: ENABLE_TRANSLATION={ENABLE_TRANSLATION}, MODEL={TRANSLATE_MODEL}, MAX_CHARS={MAX_CHARS}")
+        else:
+            log_info(f"📚 [BOOKTOKI] Skipping translation (Korean site, no translation needed)")
+        
+        if ENABLE_TRANSLATION and is_syosetu:
             # Attempt to translate using HuggingFace pipeline if available.
+            # Only for syosetu (Japanese novels)
             try:
                 log_info(f"🔄 Starting translation with model {TRANSLATE_MODEL}...")
                 from transformers import pipeline
@@ -1010,12 +1036,15 @@ def main():
                     if novel_id not in task_queues:
                         task_queues[novel_id] = deque()
                         rotation.append(novel_id)
+                        log_info(f"📚 NEW NOVEL QUEUE: {novel_id}")
                     task_queues[novel_id].append(task)
                     total_buffered += 1
-                    log_info(f"Buffered task {task.get('id')} for novel {novel_id} (total_buffered={total_buffered})")
+                    queue_status = " | ".join([f"{nid}: {len(q)}" for nid, q in task_queues.items()])
+                    log_info(f"📥 Buffered task {task.get('id')} for novel {novel_id} | Queues: [{queue_status}]")
 
                 # If no buffered tasks, wait briefly and retry
                 if not rotation:
+                    log_info("⏸️  No novels in rotation, waiting for new tasks...")
                     time.sleep(2)
                     continue
 
@@ -1023,9 +1052,12 @@ def main():
                 if rot_idx >= len(rotation):
                     rot_idx = 0
                 current_novel = rotation[rot_idx]
+                rotation_str = " → ".join(rotation)
+                log_info(f"🔁 ROTATION ORDER: [{rotation_str}] | Current: {current_novel} (index {rot_idx})")
 
                 # If queue empty (possible due to removal), advance
                 if current_novel not in task_queues or not task_queues[current_novel]:
+                    log_info(f"⚠️  Queue for {current_novel} is empty, removing from rotation")
                     # remove from rotation
                     try:
                         rotation.pop(rot_idx)
@@ -1042,11 +1074,13 @@ def main():
                     rot_idx = (rot_idx + 1) % len(rotation)
 
                 task_id = task.get("id", "")
-                log_info(f"Processing task {task_id} from novel {current_novel} (round-robin)")
+                log_info(f"🔄 ROUND-ROBIN PROCESSING: Task {task_id} (Novel: {current_novel})")
                 process_task(task, server_url)
 
                 # Small random delay between tasks to avoid macro detection
-                jitter = random.uniform(5.0, 12.0)
+                # Reduced from 5-12s to 1-3s for faster processing
+                jitter = random.uniform(1.0, 3.0)
+                log_info(f"⏳ Waiting {jitter:.1f}s before next task...")
                 time.sleep(jitter)
 
             except KeyboardInterrupt:
