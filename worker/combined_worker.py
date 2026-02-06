@@ -7,6 +7,7 @@ import traceback
 import requests
 import subprocess
 import random
+import re
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -242,6 +243,12 @@ def init_drission_connection():
         log_exception("init_drission_connection failed")
         BROWSER_PAGE = None
 
+# Log translation config at startup
+try:
+    log_info(f"ENABLE_TRANSLATION={ENABLE_TRANSLATION} TRANSLATE_MODEL={TRANSLATE_MODEL} MAX_CHARS={MAX_CHARS}")
+except Exception:
+    pass
+
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     status = None
     MANUAL_WAIT_SECONDS = int(os.environ.get("DRISSION_MANUAL_WAIT", "600"))
@@ -455,57 +462,55 @@ def _extract_syosetu(soup) -> str:
     Filters out author notes (which may appear before story content).
     """
     try:
-        # Find the novel text container
-        text_container = soup.select_one('div.js-novel-text')
-        
-        if not text_container:
-            log_error("Could not find syosetu js-novel-text container")
-            return ""
-        
-        log_info(f"Found syosetu text container, extracting paragraphs with id=L*")
-        
-        # Extract ONLY paragraphs with id starting with "L" followed by digits (L1, L2, L3, etc.)
-        ps = text_container.find_all('p', id=True)
-        all_ids = []
+        # Prefer any <p id="L###"> across the whole document (covers preface/main/afterword)
+        ps_all = soup.find_all('p', id=True)
         texts_with_ids = []
-        
-        for p in ps:
-            p_id = p.get('id', '')
-            
-            # Match pattern like L1, L2, ..., L9999
-            if p_id and p_id.startswith('L'):
+        all_ids = []
+        for p in ps_all:
+            p_id = (p.get('id') or '').strip()
+            m = re.match(r'^L(\d+)$', p_id)
+            if m:
                 try:
-                    line_num = int(p_id[1:])
+                    line_num = int(m.group(1))
                     t = p.get_text()
                     if t:
                         texts_with_ids.append((line_num, t))
                         all_ids.append(line_num)
-                except (ValueError, IndexError):
-                    pass
-        
-        if not texts_with_ids:
-            log_error("No paragraphs with L-id found in div.js-novel-text")
-            
-            # Debug: Check what other p-tags exist
-            all_ps = text_container.find_all('p', limit=20)
-            id_samples = [p.get('id', 'NO_ID') for p in all_ps[:10]]
-            text_samples = [p.get_text()[:50] for p in all_ps[:3]]
-            log_error(f"DEBUG: Found {len(all_ps)} total <p> tags")
-            log_error(f"DEBUG: First 10 IDs: {id_samples}")
-            log_error(f"DEBUG: First 3 texts: {text_samples}")
-            
-            return text_container.get_text("\n", strip=True)
-        
-        # Sort by line number and join
-        texts_with_ids.sort(key=lambda x: x[0])
-        min_id = min(all_ids)
-        max_id = max(all_ids)
-        gap_count = max_id - min_id + 1 - len(texts_with_ids)
-        
-        log_info(f"Extracted {len(texts_with_ids)} paragraphs with L-IDs from syosetu (L{min_id} ~ L{max_id}, gap={gap_count})")
-        
-        # Join with single newline to preserve original formatting
-        return "\n".join([t for _, t in texts_with_ids])
+                except Exception:
+                    continue
+
+        if texts_with_ids:
+            texts_with_ids.sort(key=lambda x: x[0])
+            min_id = min(all_ids)
+            max_id = max(all_ids)
+            gap_count = max_id - min_id + 1 - len(texts_with_ids)
+            log_info(f"Extracted {len(texts_with_ids)} paragraphs with L-IDs from syosetu (L{min_id} ~ L{max_id}, gap={gap_count})")
+            return "\n".join([t for _, t in texts_with_ids])
+
+        # Fallback: try to find the main text container (non-preface/non-afterword)
+        containers = soup.select('div.js-novel-text')
+        main_container = None
+        for c in containers:
+            cls = ' '.join(c.get('class') or [])
+            if 'preface' in cls or 'afterword' in cls:
+                continue
+            main_container = c
+            break
+        if not main_container and containers:
+            main_container = containers[0]
+
+        if main_container is None:
+            log_error("Could not find any js-novel-text container for syosetu")
+            return ""
+
+        # Debug info
+        all_ps = main_container.find_all('p', limit=20)
+        id_samples = [p.get('id', 'NO_ID') for p in all_ps[:10]]
+        text_samples = [p.get_text()[:80] for p in all_ps[:3]]
+        log_info(f"DEBUG main_container first 10 IDs: {id_samples}")
+        log_info(f"DEBUG main_container first 3 texts: {text_samples}")
+
+        return main_container.get_text("\n", strip=True)
             
     except Exception:
         log_exception("_extract_syosetu failed")
