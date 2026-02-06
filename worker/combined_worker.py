@@ -53,11 +53,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 # Add file handler to write logs to error.log
 try:
-    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "error.log")
+    # If running as a bundled executable (PyInstaller), prefer sys.executable directory
+    if getattr(sys, 'frozen', False):
+        base_for_logs = os.path.dirname(sys.executable)
+    else:
+        base_for_logs = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
+    log_file = os.path.join(base_for_logs, "error.log")
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logging.getLogger().addHandler(file_handler)
+    # Also log where the file is written
+    print(f"Logging to {log_file}")
 except Exception as e:
     print(f"Warning: Could not set up file logging: {e}")
 
@@ -116,6 +124,8 @@ BROWSER_PAGE = None  # 전역 브라우저 페이지 객체 (재사용)
 
 # 워커 설정
 _FAILURE_COUNTS = {}  # 작업별 실패 횟수 (재시도 지수백오프용)
+_REPEAT_COUNTS = {}  # 작업별 반복 처리 카운트 (서버가 같은 챕터를 반복할 때 사용)
+MAX_REPEAT = int(os.environ.get("WORKER_MAX_REPEAT", "3"))
 
 # ============================================================================
 # BeautifulSoup 설치 확인
@@ -838,6 +848,16 @@ def process_task(task: dict, server_url: str):
             log_error(f"Task {task_id} missing url")
             return
         log_info(f"Processing task {task_id} url={url}")
+        # Track how many times this task has been processed to avoid infinite loops
+        try:
+            cnt = _REPEAT_COUNTS.get(task_id, 0) + 1
+            _REPEAT_COUNTS[task_id] = cnt
+            if cnt > MAX_REPEAT:
+                log_error(f"⚠️ Task {task_id} exceeded max repeat {MAX_REPEAT}, marking as failed and skipping")
+                post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "max_repeat_exceeded"})
+                return
+        except Exception:
+            pass
         html = fetch_html(url)
         if not html:
             log_error(f"Fetching failed for task {task_id} url={url} -> notifying server")
@@ -887,12 +907,68 @@ def process_task(task: dict, server_url: str):
 
         # Extract next chapter URL
         log_info(f"Extracting next chapter URL from {url}...")
-        next_url = extract_next_url(html, url)
-        
-        if not next_url:
-            log_info(f"⚠️ No next chapter found - this may be the final chapter")
+        extracted_next = extract_next_url(html, url)
+        log_info(f"   Extracted next_url (raw): {extracted_next}")
+
+        # Normalize next URL to absolute form and validate it to avoid looping
+        from urllib.parse import urljoin, urlparse, urlunparse
+        normalized_next = ""
+        if extracted_next:
+            try:
+                if extracted_next.startswith('http'):
+                    normalized_next = extracted_next
+                else:
+                    normalized_next = urljoin(url, extracted_next)
+            except Exception:
+                normalized_next = extracted_next
+
+        # If this is a syosetu URL, force a full absolute URL with configured base domain
+        try:
+            is_syosetu_local = False
+            try:
+                is_syosetu_local = ('syosetu' in url.lower()) or (soup is not None and soup.select_one('article.p-novel') is not None)
+            except Exception:
+                is_syosetu_local = ('syosetu' in url.lower())
+
+            if is_syosetu_local and normalized_next:
+                # Force domain to configured SYOSETU_BASE (default ncode.syosetu.com)
+                SYOSETU_BASE = os.environ.get('SYOSETU_BASE', 'https://ncode.syosetu.com')
+                pnext = urlparse(normalized_next)
+                # Build path+query
+                path = pnext.path or ''
+                query = ('?' + pnext.query) if pnext.query else ''
+                # If the existing netloc is missing or not a syosetu domain, replace it
+                try:
+                    if not pnext.netloc or 'syosetu' not in pnext.netloc:
+                        normalized_next = urljoin(SYOSETU_BASE, path + (('?' + pnext.query) if pnext.query else ''))
+                        log_info(f"   Forced syosetu base domain for next: {normalized_next}")
+                    else:
+                        # Ensure scheme present
+                        if not pnext.scheme:
+                            pbase = urlparse(SYOSETU_BASE)
+                            normalized_next = urlunparse((pbase.scheme, pnext.netloc, pnext.path, '', pnext.query, ''))
+                            log_info(f"   Normalized syosetu next with scheme: {normalized_next}")
+                except Exception:
+                    # fallback: ensure absolute using SYOSETU_BASE
+                    normalized_next = urljoin(SYOSETU_BASE, path + query)
+        except Exception:
+            pass
+
+        # If normalized next equals current URL (same path), clear it to avoid reprocessing same chapter
+        try:
+            if normalized_next:
+                cur_norm = urlparse(url).path or url
+                next_norm = urlparse(normalized_next).path or normalized_next
+                if next_norm.rstrip('/') == cur_norm.rstrip('/') or normalized_next.rstrip('/') == url.rstrip('/') or normalized_next == url:
+                    log_info(f"⚠️ Normalized next URL equals current URL; clearing next_url to avoid loop: {normalized_next}")
+                    normalized_next = ""
+        except Exception:
+            pass
+
+        if not normalized_next:
+            log_info(f"⚠️ No next chapter found or normalized next is empty - this may be the final chapter")
         else:
-            log_info(f"✓ Next chapter URL: {next_url}")
+            log_info(f"✓ Next chapter URL (normalized): {normalized_next}")
 
         translated = ""
         
@@ -986,7 +1062,8 @@ def process_task(task: dict, server_url: str):
             "url": url,
             "title": title,
             "content": combined_content,
-            "next_url": next_url
+            # Send only normalized absolute next_url to server to avoid ambiguity
+            "next_url": normalized_next
         }
         
         # Log completion status with clear formatting
@@ -1002,7 +1079,33 @@ def process_task(task: dict, server_url: str):
             log_info(f"   Status: 🏁 LAST CHAPTER (no next URL)")
         log_info(f"="*70 + "\n")
         
-        post_result(server_url, result)
+        # Send result to server and log response for debugging
+        try:
+            log_info(f"Posting result to server: id={result.get('id')} title={result.get('title')}")
+            resp = post_result(server_url, result)
+            if resp is None:
+                log_error("post_result returned None (no response) - notifying server of failure")
+                post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "post_result_no_response"})
+            else:
+                try:
+                    status = getattr(resp, 'status_code', None)
+                    text = getattr(resp, 'text', '')[:2000]
+                    log_info(f"post_result HTTP {status}: {text}")
+                    if status is None or status >= 400:
+                        log_error(f"Server returned error for chapter {task_id}: HTTP {status}")
+                        post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": f"post_result_http_{status}", "response": text})
+                    else:
+                        # Successful submission — clear repeat counter for this chapter
+                        try:
+                            if task_id in _REPEAT_COUNTS:
+                                del _REPEAT_COUNTS[task_id]
+                                log_info(f"Cleared repeat counter for task {task_id} after successful post_result")
+                        except Exception:
+                            pass
+                except Exception:
+                    log_exception("Error reading post_result response")
+        except Exception:
+            log_exception("Unexpected error while posting result")
     except Exception:
         log_exception("process_task failed")
         post_fail(server_url, {"chapter_id": task.get("id",""), "url": task.get("url",""), "reason":"exception"})
