@@ -332,6 +332,8 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
 
         start = time.time()
         html = None
+        challenge_detected = False
+        log_info(f"Starting browser page source retrieval for {url} with {MANUAL_WAIT_SECONDS}s timeout")
         while True:
             val = None
             getters = ("get_page_source","get_page_html","get_html","get_source","page_source","html","get_html_source","get_page")
@@ -342,7 +344,7 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                         val = attr() if callable(attr) else attr
                         if isinstance(val, str) and val.strip():
                             break
-                except Exception:
+                except Exception as e:
                     val = None
                     continue
             if not val and hasattr(page, "driver"):
@@ -350,19 +352,32 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                     drv = page.driver
                     if hasattr(drv, "page_source"):
                         val = drv.page_source
-                except Exception:
+                except Exception as e:
                     val = None
 
             if isinstance(val, str) and val.strip():
-                snippet = val[:1000].lower()
-                if not any(k in snippet for k in ("just a moment","cf-challenge","checking your browser","cloudflare","captcha")):
+                snippet = val[:2000].lower()
+                challenge_keywords = ("just a moment","cf-challenge","checking your browser","cloudflare","captcha")
+                has_challenge = any(k in snippet for k in challenge_keywords)
+                
+                if not has_challenge:
+                    log_info(f"Page loaded successfully (no challenge detected)")
                     html = val
                     break
+                else:
+                    if not challenge_detected:
+                        challenge_detected = True
+                        log_info(f"Challenge/captcha detected. Waiting for user to complete it...")
+            
             elapsed = int(time.time() - start)
             if elapsed % 10 == 0:
-                log_info(f"Waiting for manual unblock for {url}: elapsed {elapsed}s (up to {MANUAL_WAIT_SECONDS}s)")
+                status_msg = "Challenge/captcha still detected" if challenge_detected else "Waiting for page load"
+                log_info(f"{status_msg} for {url}: elapsed {elapsed}s (up to {MANUAL_WAIT_SECONDS}s)")
             if time.time() - start > MANUAL_WAIT_SECONDS:
-                log_error(f"Manual unblock timeout after {MANUAL_WAIT_SECONDS}s for {url}")
+                if challenge_detected:
+                    log_error(f"Challenge timeout after {MANUAL_WAIT_SECONDS}s for {url}. User did not complete captcha in time.")
+                else:
+                    log_error(f"Page load timeout after {MANUAL_WAIT_SECONDS}s for {url}")
                 break
             time.sleep(3)
 
@@ -413,39 +428,57 @@ def extract_text_from_html(html: str, url: str = "") -> str:
 def _extract_syosetu(soup) -> str:
     """
     Extract content from syosetu format.
-    Looks for <div class="js-novel-text p-novel__text"> with <p id="L1">, <p id="L2">, etc.
+    Looks for <div class="js-novel-text"> containing <p id="L1">, <p id="L2">, etc.
+    These IDs guarantee actual story content, not author notes.
     """
     try:
-        # Find the novel text container
-        text_container = soup.select_one('div.js-novel-text.p-novel__text')
-        if not text_container:
-            # Fallback to article
-            article = soup.select_one('article.p-novel')
-            if article:
-                text_container = article.select_one('.p-novel__text')
+        # Find the novel text container (primary selector: js-novel-text)
+        text_container = soup.select_one('div.js-novel-text')
         
         if not text_container:
-            log_error("Could not find syosetu text container")
+            log_error("Could not find syosetu js-novel-text container")
             return ""
         
-        # Extract paragraphs with id starting with "L" (L1, L2, L3, etc.)
-        ps = text_container.find_all('p')
+        log_info(f"Found syosetu text container, extracting paragraphs with id=L*")
+        
+        # Extract ONLY paragraphs with id starting with "L" followed by digits (L1, L2, L3, etc.)
+        ps = text_container.find_all('p', id=True)
         texts = []
+        l_ids_found = []
         
         for p in ps:
             p_id = p.get('id', '')
-            # Only extract paragraphs with id like L1, L2, L3, etc.
-            if p_id and p_id.startswith('L') and p_id[1:].isdigit():
-                t = p.get_text()
-                # Keep whitespace as-is for syosetu (they use spaces/newlines for formatting)
-                if t:
-                    texts.append(t)
+            
+            # Match pattern like L1, L2, ..., L9999 (not L-prefix without digits, not custom IDs)
+            if p_id and p_id.startswith('L'):
+                try:
+                    line_num = int(p_id[1:])
+                    t = p.get_text()
+                    # Keep whitespace/formatting as-is for syosetu
+                    if t:
+                        texts.append(t)
+                        l_ids_found.append(line_num)
+                except (ValueError, IndexError):
+                    # ID doesn't match L<number> pattern, skip
+                    pass
         
         if texts:
+            if l_ids_found:
+                min_id = min(l_ids_found)
+                max_id = max(l_ids_found)
+                log_info(f"Extracted {len(texts)} paragraphs with L-IDs from syosetu (L{min_id} ~ L{max_id})")
+            else:
+                log_info(f"Extracted {len(texts)} paragraphs with L-IDs from syosetu")
             # Join with single newline to preserve original formatting
             return "\n".join(texts)
         else:
-            log_error("No paragraphs with L-id found in syosetu text container")
+            log_error("No paragraphs with L-id found in div.js-novel-text")
+            
+            # Debug: Check what other p-tags exist in the container
+            all_ps = text_container.find_all('p', limit=10)
+            log_error(f"Found {len(all_ps)} total <p> tags. First few IDs: {[p.get('id', 'NO_ID') for p in all_ps[:5]]}")
+            
+            # Fallback: return all p-tag content in the container (risky, may include notes)
             return text_container.get_text("\n", strip=True)
             
     except Exception:
