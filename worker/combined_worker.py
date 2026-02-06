@@ -518,7 +518,9 @@ def extract_text_from_html(html: str, url: str = "") -> str:
     - generic: fallback to multiple selectors
     """
     try:
+        log_info(f"🔍 Starting HTML parsing for {url}...")
         soup = BeautifulSoup(html, "html.parser")
+        log_info(f"   ✓ HTML parsed (size: {len(html)} bytes)")
         
         # Remove script and style elements
         for el in soup(['script', 'style']):
@@ -534,11 +536,18 @@ def extract_text_from_html(html: str, url: str = "") -> str:
         is_syosetu = "syosetu" in url.lower() or soup.select_one('article.p-novel') is not None
         
         if is_syosetu:
-            log_info("Detected syosetu format, using specialized parser")
-            return _extract_syosetu(soup)
+            log_info("📖 Detected syosetu format, using specialized parser")
+            result = _extract_syosetu(soup)
         else:
-            log_info("Using generic parser (booktoki or other)")
-            return _extract_generic(soup)
+            log_info("📚 Using generic parser (booktoki or other)")
+            result = _extract_generic(soup)
+        
+        if result:
+            log_info(f"✓ Extraction successful: {len(result)} characters extracted")
+        else:
+            log_error(f"❌ Extraction returned empty result")
+        
+        return result
             
     except Exception:
         log_exception("extract_text_from_html failed")
@@ -551,8 +560,11 @@ def _extract_syosetu(soup) -> str:
     Filters out author notes (which may appear before story content).
     """
     try:
+        log_info("   📖 [SYOSETU] Extracting with L-ID selector...")
         # Prefer any <p id="L###"> across the whole document (covers preface/main/afterword)
         ps_all = soup.find_all('p', id=True)
+        log_info(f"      Found {len(ps_all)} <p> tags with id attribute")
+        
         texts_with_ids = []
         all_ids = []
         for p in ps_all:
@@ -573,11 +585,14 @@ def _extract_syosetu(soup) -> str:
             min_id = min(all_ids)
             max_id = max(all_ids)
             gap_count = max_id - min_id + 1 - len(texts_with_ids)
-            log_info(f"Extracted {len(texts_with_ids)} paragraphs with L-IDs from syosetu (L{min_id} ~ L{max_id}, gap={gap_count})")
+            log_info(f"      ✓ Found {len(texts_with_ids)} paragraphs with L-IDs (L{min_id}~L{max_id}, gap={gap_count})")
             return "\n".join([t for _, t in texts_with_ids])
 
         # Fallback: try to find the main text container (non-preface/non-afterword)
+        log_info("   📖 [SYOSETU] L-ID method failed, trying container selector...")
         containers = soup.select('div.js-novel-text')
+        log_info(f"      Found {len(containers)} js-novel-text containers")
+        
         main_container = None
         for c in containers:
             cls = ' '.join(c.get('class') or [])
@@ -589,17 +604,19 @@ def _extract_syosetu(soup) -> str:
             main_container = containers[0]
 
         if main_container is None:
-            log_error("Could not find any js-novel-text container for syosetu")
+            log_error("      ❌ Could not find any js-novel-text container for syosetu")
             return ""
 
         # Debug info
         all_ps = main_container.find_all('p', limit=20)
         id_samples = [p.get('id', 'NO_ID') for p in all_ps[:10]]
         text_samples = [p.get_text()[:80] for p in all_ps[:3]]
-        log_info(f"DEBUG main_container first 10 IDs: {id_samples}")
-        log_info(f"DEBUG main_container first 3 texts: {text_samples}")
+        log_info(f"      First 10 IDs: {id_samples}")
+        log_info(f"      First 3 texts: {text_samples}")
 
-        return main_container.get_text("\n", strip=True)
+        result = main_container.get_text("\n", strip=True)
+        log_info(f"      ✓ Fallback extraction: {len(result)} characters")
+        return result
             
     except Exception:
         log_exception("_extract_syosetu failed")
@@ -611,6 +628,7 @@ def _extract_generic(soup) -> str:
     Tries multiple CSS selectors.
     """
     try:
+        log_info("   📚 [GENERIC] Trying CSS selectors...")
         el = None
         # Try booktoki specific selector first
         for sel in ['div#novel_content', '#novel_content', '.novel_content', 
@@ -618,15 +636,19 @@ def _extract_generic(soup) -> str:
                     'div.reading-body', '.reading-body', 'article', 'main']:
             el = soup.select_one(sel)
             if el:
-                log_info(f"Found content with selector: {sel}")
+                log_info(f"      ✓ Found content with selector: {sel}")
                 break
         
         if not el:
+            log_info("      ⚠️ No CSS selector matched, fallback to full text")
             # fallback: largest text block
-            return soup.get_text("\n", strip=True)
+            result = soup.get_text("\n", strip=True)
+            log_info(f"      Fallback result: {len(result)} characters")
+            return result
         
         # Extract only p tags first (most reliable)
         ps = el.find_all('p', recursive=True)
+        log_info(f"      Found {len(ps)} <p> tags in container")
         texts = []
         
         if ps:
@@ -635,7 +657,9 @@ def _extract_generic(soup) -> str:
                 t = p.get_text(separator=" ", strip=True)
                 if t and len(t) > 5:  # Skip very short text
                     texts.append(t)
+            log_info(f"      Extracted {len(texts)} paragraphs from <p> tags")
         else:
+            log_info("      No <p> tags found, trying direct text nodes...")
             # Fallback: if no p tags, try direct text nodes in the element
             for child in el.children:
                 if isinstance(child, str):
@@ -647,11 +671,17 @@ def _extract_generic(soup) -> str:
                     t = child.get_text(separator=" ", strip=True)
                     if t and len(t) > 5:
                         texts.append(t)
+            log_info(f"      Extracted {len(texts)} text nodes")
         
         if texts:
-            return "\n\n".join(texts)
+            result = "\n\n".join(texts)
+            log_info(f"      ✓ Generic extraction: {len(result)} characters")
+            return result
         else:
-            return el.get_text("\n", strip=True)
+            log_info("      No texts found with any method, using full container text")
+            result = el.get_text("\n", strip=True)
+            log_info(f"      Full container text: {len(result)} characters")
+            return result
             
     except Exception:
         log_exception("_extract_generic failed")
@@ -731,7 +761,20 @@ def _extract_next_url_syosetu(soup, url: str) -> str:
         next_links = soup.select('a.c-pager__item.c-pager__item--next')
         
         if not next_links:
-            log_info("No next URL found for syosetu")
+            log_info("📖 [SYOSETU] No next URL selector found - checking if this is the last chapter...")
+            
+            # Additional check: look for disabled/inactive next button
+            disabled_next = soup.select('a.c-pager__item.c-pager__item--next[disabled]')
+            if disabled_next:
+                log_info("📖 [SYOSETU] Confirmed: Next button is disabled - this is the LAST CHAPTER")
+                return ""
+            
+            # Check page structure for last chapter indicators
+            page_info = soup.select_one('span.c-pager__num')
+            if page_info:
+                log_info(f"📖 [SYOSETU] Pager info: {page_info.get_text(strip=True)}")
+            
+            log_info("📖 [SYOSETU] This appears to be the final chapter (no next link found)")
             return ""
         
         # Get the first one (they appear at top and bottom)
@@ -739,7 +782,7 @@ def _extract_next_url_syosetu(soup, url: str) -> str:
         href = next_link.get('href', '')
         
         if href:
-            log_info(f"Found next URL via c-pager__item--next: {href}")
+            log_info(f"✓ [SYOSETU] Found next URL: {href}")
             # The href should be relative like /n3289ds/2/
             # If it's already relative, return as-is
             if href.startswith('/'):
@@ -752,7 +795,7 @@ def _extract_next_url_syosetu(soup, url: str) -> str:
                 return parsed.path
             return href
         
-        log_info("No href found in next link")
+        log_info("⚠️ [SYOSETU] Next link element found but no href attribute")
         return ""
         
     except Exception:
@@ -808,6 +851,7 @@ def process_task(task: dict, server_url: str):
         except Exception:
             title = ""
 
+        log_info(f"Extracting text from {url}...")
         original_text = extract_text_from_html(html, url)
         
         # If extraction returned None, it's a Cloudflare challenge page
@@ -822,46 +866,86 @@ def process_task(task: dict, server_url: str):
             return
         
         if not original_text.strip():
-            log_error(f"No extracted text for {url}")
+            log_error(f"❌ No extracted text for {url} (result was empty or only whitespace)")
+            log_error(f"   original_text type: {type(original_text)}, length: {len(original_text) if original_text else 0}")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "no_text"})
             return
+        
+        log_info(f"✓ Extracted {len(original_text)} characters from {url}")
 
         save_text_file(ORIGINAL_DIR, title or url, "_orig", original_text)
 
         # Extract next chapter URL
+        log_info(f"Extracting next chapter URL from {url}...")
         next_url = extract_next_url(html, url)
+        
+        if not next_url:
+            log_info(f"⚠️ No next chapter found - this may be the final chapter")
+        else:
+            log_info(f"✓ Next chapter URL: {next_url}")
 
         translated = ""
+        log_info(f"Translation config: ENABLE_TRANSLATION={ENABLE_TRANSLATION}, MODEL={TRANSLATE_MODEL}, MAX_CHARS={MAX_CHARS}")
+        
         if ENABLE_TRANSLATION:
             # Attempt to translate using HuggingFace pipeline if available.
             try:
+                log_info(f"🔄 Starting translation with model {TRANSLATE_MODEL}...")
                 from transformers import pipeline
-                log_info(f"Attempting translation with model {TRANSLATE_MODEL}")
-                translator = pipeline("translation", model=TRANSLATE_MODEL)
+                
+                # Load model with detailed logging
+                try:
+                    log_info(f"   Loading model: {TRANSLATE_MODEL}")
+                    translator = pipeline("translation", model=TRANSLATE_MODEL)
+                    log_info(f"   ✓ Model loaded successfully")
+                except Exception as model_load_err:
+                    log_error(f"   ❌ Failed to load model: {model_load_err}")
+                    log_exception(f"   Model loading error")
+                    translator = None
+                    raise model_load_err
+                
+                # Split text into chunks
                 parts = [original_text[i:i+MAX_CHARS] for i in range(0, len(original_text), MAX_CHARS)]
+                log_info(f"   Split into {len(parts)} chunks (max {MAX_CHARS} chars each)")
+                
                 translated_parts = []
-                for p in parts:
+                for chunk_idx, p in enumerate(parts, 1):
                     try:
+                        log_info(f"   Translating chunk {chunk_idx}/{len(parts)} ({len(p)} chars)...")
                         out = translator(p)
+                        
                         # Typical output: [{'translation_text': '...'}]
+                        translated_text = ""
                         if isinstance(out, list) and len(out) > 0:
                             first = out[0]
                             if isinstance(first, dict) and 'translation_text' in first:
-                                translated_parts.append(first['translation_text'])
+                                translated_text = first['translation_text']
                             elif isinstance(first, dict) and 'label' in first:
-                                translated_parts.append(first.get('label',''))
+                                translated_text = first.get('label','')
                             else:
-                                translated_parts.append(str(first))
+                                translated_text = str(first)
                         elif isinstance(out, str):
-                            translated_parts.append(out)
+                            translated_text = out
                         else:
-                            translated_parts.append(str(out))
-                    except Exception:
-                        log_exception("translation chunk failed")
-                        translated_parts.append("")
+                            translated_text = str(out)
+                        
+                        if translated_text:
+                            translated_parts.append(translated_text)
+                            log_info(f"   ✓ Chunk {chunk_idx} translated: {len(translated_text)} chars")
+                        else:
+                            log_error(f"   ⚠️ Chunk {chunk_idx} returned empty result")
+                    except Exception as chunk_err:
+                        log_error(f"   ❌ Chunk {chunk_idx} translation failed: {chunk_err}")
+                        log_exception(f"   Translation chunk {chunk_idx} error")
+                
                 translated = "\n\n".join([t for t in translated_parts if t])
-            except Exception:
-                log_error("Translation model not available; skipping translation")
+                if translated:
+                    log_info(f"✓ Translation complete: {len(translated)} total characters")
+                else:
+                    log_error(f"⚠️ Translation produced empty result despite {len(parts)} chunks")
+            except Exception as trans_err:
+                log_error(f"❌ Translation failed: {trans_err}")
+                log_exception(f"Translation error")
                 translated = ""
 
         if translated:
@@ -878,8 +962,21 @@ def process_task(task: dict, server_url: str):
             "content": combined_content,
             "next_url": next_url
         }
+        
+        # Log completion status with clear formatting
+        log_info(f"\n" + "="*70)
+        log_info(f"✅ TASK COMPLETED: {task_id}")
+        log_info(f"   Title: {title}")
+        log_info(f"   Original text: {len(original_text)} chars")
+        log_info(f"   Translation: {len(translated) if translated else 0} chars")
+        log_info(f"   Combined file: {combined_path}")
+        if next_url:
+            log_info(f"   Next chapter: {next_url}")
+        else:
+            log_info(f"   Status: 🏁 LAST CHAPTER (no next URL)")
+        log_info(f"="*70 + "\n")
+        
         post_result(server_url, result)
-        log_info(f"Task {task_id} completed. files: {combined_path}")
     except Exception:
         log_exception("process_task failed")
         post_fail(server_url, {"chapter_id": task.get("id",""), "url": task.get("url",""), "reason":"exception"})
