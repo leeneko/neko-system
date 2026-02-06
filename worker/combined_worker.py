@@ -8,9 +8,10 @@ import requests
 import subprocess
 import random
 from typing import Optional
-
-from bs4 import BeautifulSoup
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
 # logging helpers
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 def log_info(msg): logging.info(msg)
@@ -25,57 +26,79 @@ except Exception:
     ChromiumPage = None
     ChromiumOptions = None
     HAS_DRISSION = False
+        # Buffer size controls how many tasks we prefetch into per-novel queues
+        buffer_size = int(os.environ.get("WORKER_BUFFER_SIZE", "10"))
+        log_info(f"Using per-novel buffer_size={buffer_size} and sequential round-robin processing")
 
-# Configuration
-_base_dir = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(_base_dir, "config.txt")
-DEFAULT_OCI_URL = os.environ.get("OCI_URL", "http://144.24.87.146:8001")
-POLL_ENDPOINT = os.environ.get("OCI_POLL_ENDPOINT", "/worker/get")
-RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/worker/submit")
-FAIL_ENDPOINT = os.environ.get("OCI_FAIL_ENDPOINT", "/worker/fail")
-TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "facebook/mbart-large-50-many-to-many-mmt")
-TRANSLATION_ENGINE = os.environ.get("TRANSLATION_ENGINE", "mbart50")
-ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "1") == "1"
-MAX_CHARS = int(os.environ.get("TRANSLATE_MAX_CHARS", "800"))
+        # Mapping: novel_id -> deque(tasks)
+        task_queues = {}
+        # Rotation order (list of novel_id)
+        rotation = []
+        rot_idx = 0
 
-DRISSION_PORT = int(os.environ.get("DRISSION_PORT", "9222"))
-BROWSER_PAGE = None
-_FAILURE_COUNTS = {}
-# Optional proxy list (comma-separated). Example: "http://user:pass@1.2.3.4:8080,https://5.6.7.8:3128"
-PROXY_LIST = [p.strip() for p in os.environ.get("PROXY_LIST", "").split(",") if p.strip()]
+        try:
+            while True:
+                try:
+                    # Pre-fill buffer up to buffer_size
+                    total_buffered = sum(len(q) for q in task_queues.values())
+                    while total_buffered < buffer_size:
+                        task = get_next_task(server_url)
+                        if not task:
+                            break
+                        novel_id = task.get("novel_id") or str(task.get("url") or "unknown_novel")
+                        novel_id = str(novel_id)
+                        if novel_id not in task_queues:
+                            task_queues[novel_id] = deque()
+                            rotation.append(novel_id)
+                        task_queues[novel_id].append(task)
+                        total_buffered += 1
+                        log_info(f"Buffered task {task.get('id')} for novel {novel_id} (total_buffered={total_buffered})")
 
-# util: load server url from config.txt if present
-def load_server_url():
-    url = DEFAULT_OCI_URL
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                c = f.read().strip()
-                if c.startswith("http"):
-                    url = c
-    except Exception:
-        pass
-    return url
+                    # If no buffered tasks, wait briefly and retry
+                    if not rotation:
+                        time.sleep(2)
+                        continue
 
-# http helpers
-def _build_url(base, endpoint):
-    if endpoint.startswith("http"):
-        return endpoint
-    return base.rstrip("/") + "/" + endpoint.lstrip("/")
+                    # Select next novel in rotation
+                    if rot_idx >= len(rotation):
+                        rot_idx = 0
+                    current_novel = rotation[rot_idx]
 
-def get_next_task(server_url: str):
-    try:
-        url = _build_url(server_url, POLL_ENDPOINT)
-        log_info(f"Polling next task from {url}")
-        r = requests.get(url, timeout=30)
-        log_info(f"Poll response: status={r.status_code} body={r.text[:1000]}")
-        if r.status_code == 200:
-            j = r.json()
-            if isinstance(j, dict):
-                if "exists" in j:
-                    if not j.get("exists"):
-                        return None
-                    return {"id": j.get("chapter_id"), "url": j.get("url"), "novel_id": j.get("novel_id")}
+                    # If queue empty (possible due to removal), advance
+                    if current_novel not in task_queues or not task_queues[current_novel]:
+                        # remove from rotation
+                        try:
+                            rotation.pop(rot_idx)
+                        except Exception:
+                            rot_idx = (rot_idx + 1) % (len(rotation) or 1)
+                        continue
+
+                    task = task_queues[current_novel].popleft()
+                    if not task_queues[current_novel]:
+                        # remove empty queue from rotation
+                        task_queues.pop(current_novel, None)
+                        rotation.pop(rot_idx)
+                    else:
+                        rot_idx = (rot_idx + 1) % len(rotation)
+
+                    task_id = task.get("id", "")
+                    log_info(f"Processing task {task_id} from novel {current_novel} (round-robin)")
+                    process_task(task, server_url)
+
+                    # Small random delay between tasks to avoid macro detection
+                    jitter = random.uniform(5.0, 12.0)
+                    time.sleep(jitter)
+
+                except KeyboardInterrupt:
+                    log_info("Keyboard interrupt, exiting main loop")
+                    break
+                except Exception:
+                    log_exception("Main loop error")
+                    time.sleep(5)
+        finally:
+            log_info("Worker shutting down")
+
+
                 if "chapter_id" in j and "url" in j:
                     return {"id": j.get("chapter_id"), "url": j.get("url"), "novel_id": j.get("novel_id")}
         else:
@@ -716,11 +739,33 @@ def process_task(task: dict, server_url: str):
 
         translated = ""
         if ENABLE_TRANSLATION:
-            # if torch import or model load fails, skip gracefully
+            # Attempt to translate using HuggingFace pipeline if available.
             try:
                 from transformers import pipeline
-                # lightweight check to avoid heavy model loads here; actual model load is environment-dependent
-                translated = ""  # placeholder; real translation may be expensive in exe
+                log_info(f"Attempting translation with model {TRANSLATE_MODEL}")
+                translator = pipeline("translation", model=TRANSLATE_MODEL)
+                parts = [original_text[i:i+MAX_CHARS] for i in range(0, len(original_text), MAX_CHARS)]
+                translated_parts = []
+                for p in parts:
+                    try:
+                        out = translator(p)
+                        # Typical output: [{'translation_text': '...'}]
+                        if isinstance(out, list) and len(out) > 0:
+                            first = out[0]
+                            if isinstance(first, dict) and 'translation_text' in first:
+                                translated_parts.append(first['translation_text'])
+                            elif isinstance(first, dict) and 'label' in first:
+                                translated_parts.append(first.get('label',''))
+                            else:
+                                translated_parts.append(str(first))
+                        elif isinstance(out, str):
+                            translated_parts.append(out)
+                        else:
+                            translated_parts.append(str(out))
+                    except Exception:
+                        log_exception("translation chunk failed")
+                        translated_parts.append("")
+                translated = "\n\n".join([t for t in translated_parts if t])
             except Exception:
                 log_error("Translation model not available; skipping translation")
                 translated = ""
@@ -749,22 +794,58 @@ def main():
     server_url = load_server_url()
     init_drission_connection()
     log_info("Worker started")
-    while True:
-        try:
-            task = get_next_task(server_url)
-            if task:
-                process_task(task, server_url)
-                # random delay between requests to help avoid macro detection (5-15s)
-                jitter = random.uniform(5.0, 15.0)
-                log_info(f"Sleeping for {jitter:.1f}s to avoid rate-detection")
-                time.sleep(jitter)
-            else:
-                time.sleep(2)
-        except KeyboardInterrupt:
-            break
-        except Exception:
-            log_exception("Main loop error")
-            time.sleep(5)
+    
+    # 환경변수로 워커 스레드 수 설정 (기본값: 3)
+    max_workers = int(os.environ.get("WORKER_THREADS", "3"))
+    log_info(f"Starting with {max_workers} parallel worker threads")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}  # future -> task_id mapping for tracking
+        
+        while True:
+            try:
+                # 완료된 future 처리 및 정리
+                done_futures = []
+                for future in list(futures.keys()):
+                    if future.done():
+                        try:
+                            future.result()  # Get result to catch any exceptions
+                        except Exception as e:
+                            log_error(f"Task {futures[future]} raised exception: {e}")
+                        done_futures.append(future)
+                        del futures[future]
+                
+                # 활성 task 개수 확인
+                active_count = len(futures)
+                
+                # 워커 스레드가 모두 사용 중이 아니면 새 task 폴링
+                if active_count < max_workers:
+                    task = get_next_task(server_url)
+                    if task:
+                        task_id = task.get("id", "unknown")
+                        log_info(f"Submitting task {task_id} to thread pool (active: {active_count}/{max_workers})")
+                        future = executor.submit(process_task, task, server_url)
+                        futures[future] = task_id
+                    else:
+                        # No new task available, wait a bit
+                        time.sleep(1)
+                else:
+                    # All workers busy, wait before polling again
+                    log_info(f"All {max_workers} workers busy, waiting for task completion")
+                    time.sleep(2)
+                    
+            except KeyboardInterrupt:
+                log_info("Keyboard interrupt, waiting for active tasks to complete...")
+                # Wait for remaining tasks to complete
+                for future in futures.keys():
+                    try:
+                        future.result(timeout=300)
+                    except Exception:
+                        pass
+                break
+            except Exception:
+                log_exception("Main loop error")
+                time.sleep(5)
 
 if __name__ == "__main__":
     main()

@@ -41,6 +41,9 @@
       background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
                   radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
                   var(--bg);
+      background-repeat: no-repeat;
+      background-attachment: fixed;
+      background-size: cover;
       color: var(--text);
       padding: 22px 18px 36px;
     }
@@ -174,6 +177,12 @@
       <div class="toolbar-group">
         <a id="recrawl-btn" class="btn" href="/web/read/{{ chapter_id }}/recrawl" title="잘못된 내용인 경우 다시 크롤링합니다">다시 크롤</a>
       </div>
+      <div class="toolbar-group">
+        <label style="font-size:12px;color:var(--muted);">보기</label>
+        <button id="view-original" class="btn">원본</button>
+        <button id="view-combined" class="btn primary">원본+번역</button>
+        <button id="view-translation" class="btn">번역</button>
+      </div>
     </div>
 
     <!-- Chapter title -->
@@ -263,6 +272,43 @@
       });
     }
     attachNext(document.getElementById('next-btn'));
+
+    // View mode buttons (original / combined / translation)
+    try {
+      const btnOrig = document.getElementById('view-original');
+      const btnComb = document.getElementById('view-combined');
+      const btnTrans = document.getElementById('view-translation');
+      const transSec = document.getElementById('translated');
+      const origSec = document.getElementById('content');
+
+      function applyMode(mode){
+        try { localStorage.setItem('reader_view_mode', mode); } catch(e){}
+        if(mode === 'original'){
+          if(origSec) origSec.style.display = '';
+          if(transSec) transSec.style.display = 'none';
+          btnOrig.classList.add('primary'); btnComb.classList.remove('primary'); btnTrans.classList.remove('primary');
+        } else if(mode === 'translation'){
+          if(origSec) origSec.style.display = 'none';
+          if(transSec) transSec.style.display = '';
+          btnOrig.classList.remove('primary'); btnComb.classList.remove('primary'); btnTrans.classList.add('primary');
+        } else {
+          // combined
+          if(origSec) origSec.style.display = '';
+          if(transSec) transSec.style.display = '';
+          btnOrig.classList.remove('primary'); btnComb.classList.add('primary'); btnTrans.classList.remove('primary');
+        }
+      }
+
+      if(btnOrig) btnOrig.addEventListener('click', ()=>applyMode('original'));
+      if(btnComb) btnComb.addEventListener('click', ()=>applyMode('combined'));
+      if(btnTrans) btnTrans.addEventListener('click', ()=>applyMode('translation'));
+
+      // Apply saved preference
+      try{
+        const saved = localStorage.getItem('reader_view_mode') || 'combined';
+        applyMode(saved);
+      }catch(e){ applyMode('combined'); }
+    } catch(e){ console.warn('view mode init failed', e); }
   })();
   </script>
 </body>

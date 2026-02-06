@@ -166,6 +166,23 @@
             </div>
             </div>
 
+        <!-- Pagination controls (top) -->
+        <div class="pagination-controls" style="display:flex;justify-content:space-between;align-items:center;margin:8px 0;">
+            <div>
+                <button id="prev-top" class="btn">« 이전</button>
+                <button id="next-top" class="btn">다음 »</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <label style="font-size:13px;color:var(--muted);">페이지 크기</label>
+                <select id="page-size-select">
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                </select>
+                <span id="page-info" style="font-size:13px;color:var(--muted);margin-left:8px;"></span>
+            </div>
+        </div>
+
             <ul id="chapters-list">
             {% for c in chapters %}
                 <li data-id="{{ c.id }}" data-title="{{ c.title }}" style="margin:6px 0;list-style:none;">
@@ -174,6 +191,18 @@
                 </li>
             {% endfor %}
             </ul>
+
+        <!-- Pagination controls (bottom) -->
+        <div class="pagination-controls" style="display:flex;justify-content:space-between;align-items:center;margin:8px 0;">
+            <div>
+                <button id="prev-bottom" class="btn">« 이전</button>
+                <button id="next-bottom" class="btn">다음 »</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <label style="font-size:13px;color:var(--muted);">페이지</label>
+                <span id="page-info-bottom" style="font-size:13px;color:var(--muted);margin-left:8px;"></span>
+            </div>
+        </div>
 
             <script>
             (function(){
@@ -204,6 +233,57 @@
             } catch(e) {
                 sortList(true);
             }
+            
+            // --- Pagination logic ---
+            const pageSizeSelect = document.getElementById('page-size-select');
+            const pageInfo = document.getElementById('page-info');
+            const pageInfoBottom = document.getElementById('page-info-bottom');
+            const listItems = Array.from(list.querySelectorAll('li'));
+            let pageSize = parseInt(pageSizeSelect.value, 10) || 100;
+            let currentPage = 1;
+
+            function renderPage() {
+                const total = listItems.length;
+                const pages = Math.max(1, Math.ceil(total / pageSize));
+                if (currentPage > pages) currentPage = pages;
+                const start = (currentPage - 1) * pageSize;
+                const end = start + pageSize;
+                listItems.forEach((li, idx) => {
+                    li.style.display = (idx >= start && idx < end) ? '' : 'none';
+                });
+                pageInfo.textContent = `페이지 ${currentPage} / ${pages} (총 ${total}개)`;
+                pageInfoBottom.textContent = `페이지 ${currentPage} / ${pages}`;
+            }
+
+            function changePage(delta) {
+                const total = listItems.length;
+                const pages = Math.max(1, Math.ceil(total / pageSize));
+                currentPage = Math.min(pages, Math.max(1, currentPage + delta));
+                renderPage();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+
+            pageSizeSelect.addEventListener('change', function(){
+                pageSize = parseInt(this.value, 10) || 100;
+                try { localStorage.setItem('chapters_page_size_{{ novel_id }}', String(pageSize)); } catch(e){}
+                currentPage = 1;
+                renderPage();
+            });
+
+            document.getElementById('prev-top').addEventListener('click', ()=>changePage(-1));
+            document.getElementById('next-top').addEventListener('click', ()=>changePage(1));
+            document.getElementById('prev-bottom').addEventListener('click', ()=>changePage(-1));
+            document.getElementById('next-bottom').addEventListener('click', ()=>changePage(1));
+
+            // Apply saved pageSize if present
+            try {
+                const savedSize = parseInt(localStorage.getItem('chapters_page_size_{{ novel_id }}'), 10);
+                if ([25,50,100].includes(savedSize)) {
+                    pageSizeSelect.value = String(savedSize);
+                    pageSize = savedSize;
+                }
+            } catch(e){}
+            renderPage();
             })();
             </script>
         </div>
