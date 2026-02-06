@@ -27,16 +27,54 @@ except Exception:
     ChromiumPage = None
     ChromiumOptions = None
     HAS_DRISSION = False
-    HAS_DRISSION = False
 
+# Worker endpoints (can be overridden via env vars)
+GET_ENDPOINT = os.environ.get("OCI_GET_ENDPOINT", "/worker/get")
+RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/worker/submit")
+FAIL_ENDPOINT = os.environ.get("OCI_FAIL_ENDPOINT", "/worker/fail")
 
-                if "chapter_id" in j and "url" in j:
-                    return {"id": j.get("chapter_id"), "url": j.get("url"), "novel_id": j.get("novel_id")}
-        else:
+def _build_url(server_url: str, endpoint: str) -> str:
+    if not server_url:
+        return endpoint
+    if server_url.endswith('/') and endpoint.startswith('/'):
+        return server_url[:-1] + endpoint
+    if not server_url.endswith('/') and not endpoint.startswith('/'):
+        return server_url + '/' + endpoint
+    return server_url + endpoint
+
+def get_next_task(server_url: str) -> Optional[dict]:
+    try:
+        url = _build_url(server_url, GET_ENDPOINT)
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
             log_error(f"get_next_task returned {r.status_code}: {r.text[:1000]}")
+            return None
+        j = r.json()
+        if not j:
+            return None
+
+        # Support responses like {"exists": True, "data": {...}} or direct payload
+        payload = None
+        if isinstance(j, dict) and j.get("exists") is True:
+            payload = j.get("data") or j
+        elif isinstance(j, dict) and ("chapter_id" in j or "id" in j) and "url" in j:
+            payload = j
+
+        if not payload:
+            return None
+
+        # Normalize fields
+        chapter_id = payload.get("chapter_id") or payload.get("id")
+        url = payload.get("url")
+        novel_id = payload.get("novel_id") or payload.get("novelId") or payload.get("novel")
+
+        if chapter_id and url:
+            return {"id": chapter_id, "url": url, "novel_id": novel_id}
+
+        return None
     except Exception:
         log_exception("get_next_task failed")
-    return None
+        return None
 
 def post_result(server_url: str, payload: dict):
     try:
