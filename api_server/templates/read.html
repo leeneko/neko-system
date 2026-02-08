@@ -175,14 +175,19 @@
         <button id="spacing-toggle" class="btn">간격 보정</button>
       </div>
       <div class="toolbar-group">
-        <a id="recrawl-btn" class="btn" href="/web/read/{{ chapter_id }}/recrawl" title="잘못된 내용인 경우 다시 크롤링합니다">다시 크롤</a>
+        <a id="recrawl-btn" class="btn" href="/web/read/{{ chapter_id }}/recrawl" title="내용 원본 재수집">재수집</a>
+        {% if translated_content %}
+        <a id="retrans-btn" class="btn" href="/web/read/{{ chapter_id }}/retranslate" onclick="return confirm('기존 번역을 삭제하고 다시 번역하시겠습니까?');" title="번역 오류 시 재요청">재번역</a>
+        {% endif %}
       </div>
+      {% if translated_content %}
       <div class="toolbar-group">
         <label style="font-size:12px;color:var(--muted);">보기</label>
         <button id="view-original" class="btn">원본</button>
         <button id="view-combined" class="btn primary">원본+번역</button>
         <button id="view-translation" class="btn">번역</button>
       </div>
+      {% endif %}
     </div>
 
     <!-- Chapter title -->
@@ -195,7 +200,7 @@
 
     <!-- Translation if available -->
     {% if translated_content %}
-    <div class="translation-section">
+    <div class="translation-section" id="trans-section">
       <h3>번역</h3>
       <div id="translated" class="content-area">
         {{ translated_content | safe }}
@@ -278,24 +283,31 @@
       const btnOrig = document.getElementById('view-original');
       const btnComb = document.getElementById('view-combined');
       const btnTrans = document.getElementById('view-translation');
-      const transSec = document.getElementById('translated');
+      const transSec = document.getElementById('trans-section');
       const origSec = document.getElementById('content');
+      
+      // 번역본이 없으면 모드 전환 기능 제한
+      const hasTranslation = !!transSec;
 
       function applyMode(mode){
         try { localStorage.setItem('reader_view_mode', mode); } catch(e){}
-        if(mode === 'original'){
-          if(origSec) origSec.style.display = '';
+        if(btnOrig) btnOrig.classList.remove('primary');
+        if(btnComb) btnComb.classList.remove('primary');
+        if(btnTrans) btnTrans.classList.remove('primary');
+
+        if(mode === 'original' || !hasTranslation){
+          if(origSec) origSec.style.display = 'block';
           if(transSec) transSec.style.display = 'none';
-          btnOrig.classList.add('primary'); btnComb.classList.remove('primary'); btnTrans.classList.remove('primary');
+          if(btnOrig) btnOrig.classList.add('primary');
         } else if(mode === 'translation'){
           if(origSec) origSec.style.display = 'none';
-          if(transSec) transSec.style.display = '';
-          btnOrig.classList.remove('primary'); btnComb.classList.remove('primary'); btnTrans.classList.add('primary');
+          if(transSec) transSec.style.display = 'block';
+          if(btnTrans) btnTrans.classList.add('primary');
         } else {
           // combined
-          if(origSec) origSec.style.display = '';
-          if(transSec) transSec.style.display = '';
-          btnOrig.classList.remove('primary'); btnComb.classList.add('primary'); btnTrans.classList.remove('primary');
+          if(origSec) origSec.style.display = 'block';
+          if(transSec) transSec.style.display = 'block';
+          if(btnComb) btnComb.classList.add('primary');
         }
       }
 
@@ -306,6 +318,7 @@
       // Apply saved preference
       try{
         const saved = localStorage.getItem('reader_view_mode') || 'combined';
+        if(!hasTranslation) saved = 'original';
         applyMode(saved);
       }catch(e){ applyMode('combined'); }
     } catch(e){ console.warn('view mode init failed', e); }

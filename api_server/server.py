@@ -212,6 +212,7 @@ class JobResult(BaseModel):
     next_url: Optional[str] = None
     translation: Optional[str] = None
     translation_engine: Optional[str] = None
+    translated_title: Optional[str] = None
 
 class JobFail(BaseModel):
     chapter_id: int
@@ -426,22 +427,27 @@ def web_read(request: Request, chapter_id: int):
         view_mode = "original"
 
     translated_content = None
-    if view_mode in ("mixed", "translated"):
-        cur.execute("""
-            SELECT content FROM chapter_translations
-            WHERE chapter_id = %s
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, (chapter_id,))
-        trow = cur.fetchone()
-        if trow:
-            translated_content = trow[0]
+    cur.execute("""
+        SELECT content FROM chapter_translations
+        WHERE chapter_id = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (chapter_id,))
+    trow = cur.fetchone()
+    if trow:
+        translated_content = trow[0]
 
     conn.close()
     
     # 본문 줄바꿈 처리
     if request.query_params.get("spacing") == "1":
         content = apply_spacing(content)
+    
+    view_mode = request.query_params.get("view")
+    if not view_mode:
+        # 쿠키나 파라미터가 없으면, 번역본이 있으면 'combined', 없으면 'original'
+        view_mode = "combined" if translated_content else "original"
+    
     content_html = content.replace("\n", "<br>")
     translated_html = translated_content.replace("\n", "<br>") if translated_content else None
     
@@ -457,6 +463,7 @@ def web_read(request: Request, chapter_id: int):
         "chapter_url": chapter_url,
         "theme": get_theme(request)
     })
+
     response.set_cookie("last_novel_id", str(novel_id), max_age=60 * 60 * 24 * 365, path="/")
     recent = get_recent_reads(request)
     recent = [r for r in recent if r.get("novel_id") != novel_id]
@@ -468,6 +475,28 @@ def web_read(request: Request, chapter_id: int):
     })
     set_recent_reads(response, recent)
     return response
+
+@app.get("/web/read/{chapter_id}/retranslate")
+def retranslate_chapter(request: Request, chapter_id: int):
+    """기존 번역 삭제 후 재번역 요청"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # 1. 기존 번역 삭제
+        cur.execute("DELETE FROM chapter_translations WHERE chapter_id = %s", (chapter_id,))
+        # 2. 챕터 상태를 번역 대기(또는 처리 대기)로 변경 
+        # (주의: 워커 로직에 따라 'PENDING'으로 할지 별도 상태로 할지 결정 필요. 
+        #  여기서는 워커가 번역되지 않은 PENDING 항목을 가져간다고 가정)
+        cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (chapter_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        # 에러 처리 (로그 등)
+    finally:
+        conn.close()
+    
+    # 뷰어 페이지로 리다이렉트 (번역 중 메시지가 뜨도록)
+    return RedirectResponse(url=f"/web/read/{chapter_id}")
 
 @app.get("/web/novel/{novel_id}/refresh")
 def web_refresh_novel(request: Request, novel_id: int):
@@ -727,21 +756,30 @@ def get_job():
 def submit_job(data: JobResult):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE chapters SET title = %s, content = %s, next_url = %s, status = 'DONE' WHERE id = %s", (data.title, data.content, data.next_url, data.chapter_id))
+
+    # 번역된 제목이 있으면 그것으로, 없으면 원본 제목으로 업데이트
+    final_title = data.translated_title if data.translated_title else data.title
+
+    cur.execute("UPDATE chapters SET title = %s, content = %s, next_url = %s, status = 'DONE' WHERE id = %s", (final_title, data.content, data.next_url, data.chapter_id))
+
     cur.execute("SELECT novel_id FROM chapters WHERE id = %s", (data.chapter_id,))
+
     row = cur.fetchone()
     if row and data.next_url and "http" in data.next_url:
         novel_id = row[0]
         cur.execute("INSERT INTO chapters (novel_id, url, status) VALUES (%s, %s, 'PENDING') ON CONFLICT (url) DO NOTHING", (novel_id, data.next_url))
+    
     if data.translation:
-        engine = data.translation_engine or "mbart50"
+        engine = data.translation_engine or "unknown"
         cur.execute("""
             INSERT INTO chapter_translations (chapter_id, engine, content)
             VALUES (%s, %s, %s)
-            ON CONFLICT (chapter_id, engine) DO UPDATE SET content = EXCLUDED.content
+            ON CONFLICT (chapter_id, engine) DO UPDATE SET content = EXCLUDED.content, created_at = CURRENT_TIMESTAMP
         """, (data.chapter_id, engine, data.translation))
+    
     conn.commit()
     conn.close()
+
     return {"status": "success"}
 
 @app.post("/worker/fail")
