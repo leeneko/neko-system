@@ -117,8 +117,8 @@ def log_exception(msg):
 # DB 연결 설정
 DB_HOST = os.environ.get("DB_HOST", "144.24.87.146")
 DB_PORT = os.environ.get("DB_PORT", "5432")
-DB_USER = os.environ.get("DB_USER", "kcc_user")
-DB_PASS = os.environ.get("DB_PASS", "kcc_password")
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASS = os.environ.get("DB_PASS", "neko15746+")
 DB_NAME = os.environ.get("DB_NAME", "rabbit_novel")
 
 # 번역 설정
