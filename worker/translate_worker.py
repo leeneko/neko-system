@@ -7,7 +7,7 @@
   - 별도의 머신(데스크탑 PC)에서 실행되는 번역 전용 워커
   - OCI 클라우드의 PostgreSQL DB에 직접 접근
   - 원본 챕터가 있지만 번역이 없는 항목을 찾아 번역 수행
-  - Hugging Face transformers를 사용한 고품질 번역 (로컬에서만 실행)
+  - Google Translate API를 사용한 빠른 번역 (googletrans 라이브러리)
   - 번역 결과를 DB에 저장
 
 작동 흐름:
@@ -24,7 +24,7 @@
   - DB_USER: 데이터베이스 사용자 (예: kcc_user)
   - DB_PASS: 데이터베이스 비밀번호
   - DB_NAME: 데이터베이스 이름 (예: rabbit_novel)
-  - TRANSLATE_MODEL: 번역 모델 (예: Helsinki-NLP/opus-mt-ja-ko)
+  - TRANSLATION_ENGINE: 번역 엔진 (기본값: google)
   - MAX_CHARS: 한 번에 번역할 최대 문자 수 (기본값: 512)
   - WORKER_INTERVAL: 작업 사이의 대기 시간(초) (기본값: 2)
 
@@ -122,33 +122,24 @@ DB_PASS = os.environ.get("DB_PASS", "kcc_password")
 DB_NAME = os.environ.get("DB_NAME", "rabbit_novel")
 
 # 번역 설정
-TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "Helsinki-NLP/opus-mt-ja-ko")
+TRANSLATION_ENGINE = os.environ.get("TRANSLATION_ENGINE", "google")
 MAX_CHARS = int(os.environ.get("MAX_CHARS", "512"))
 
 # 워커 설정
 WORKER_INTERVAL = int(os.environ.get("WORKER_INTERVAL", "2"))
-
-# HuggingFace 캐시 디렉토리 설정
-HF_HOME = os.environ.get("HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface"))
-os.environ["HF_HOME"] = HF_HOME
 
 # ============================================================================
 # 번역 관련 설정 확인
 # ============================================================================
 
 try:
-    from transformers import pipeline
-    HAS_TRANSFORMERS = True
-    log_info("✓ transformers 설치됨 (번역 기능 활성화)")
+    from google_trans_new import google_translator
+    HAS_TRANSLATOR = True
+    log_info("✓ google_trans_new 설치됨 (Google Translate 사용)")
 except Exception as e:
-    # Catch broad exceptions because importing transformers may raise OSError from torch (DLL load failures)
-    HAS_TRANSFORMERS = False
-    log_error(f"❌ transformers or torch import error: {e}")
-    log_error("If running as an EXE, common fixes are:\n"
-              " - Build the EXE on Windows with a CPU-only torch wheel: `pip install torch --index-url https://download.pytorch.org/whl/cpu`\n"
-              " - Ensure Microsoft Visual C++ Redistributable is installed (2015-2019/2017).\n"
-              " - If you need CUDA, install matching CUDA runtime/drivers on target machine.\n"
-              "After fixing the build environment, rebuild the EXE and retry.")
+    HAS_TRANSLATOR = False
+    log_error(f"❌ google_trans_new 미설치: {e}")
+    log_error("설치: pip install google_trans_new")
 
 # ============================================================================
 # DB 연결 함수
@@ -212,7 +203,7 @@ def get_chapter_to_translate(conn: psycopg2.extensions.connection) -> Optional[D
               )
             ORDER BY c.id ASC
             LIMIT 1
-        """, (TRANSLATE_MODEL,))
+        """, (TRANSLATION_ENGINE,))
         
         row = cur.fetchone()
         cur.close()
@@ -237,9 +228,9 @@ def get_chapter_to_translate(conn: psycopg2.extensions.connection) -> Optional[D
 
 def translate_text(text: str) -> Optional[str]:
     """
-    Hugging Face transformers를 사용해 텍스트 번역
+    Google Translate를 사용해 텍스트 번역
     
-    MAX_CHARS 크기로 청크를 나누어 번역 (메모리 부하 감소)
+    MAX_CHARS 크기로 청크를 나누어 번역 (API 요청 제한 회피)
     
     Args:
         text: 번역할 텍스트
@@ -247,8 +238,8 @@ def translate_text(text: str) -> Optional[str]:
     Returns:
         번역된 텍스트, 또는 실패 시 None
     """
-    if not HAS_TRANSFORMERS:
-        log_error("transformers 미설치")
+    if not HAS_TRANSLATOR:
+        log_error("google_trans_new 미설치")
         return None
     
     if not text or not text.strip():
@@ -256,28 +247,15 @@ def translate_text(text: str) -> Optional[str]:
         return None
     
     try:
-        log_info(f"🔄 번역 시작: 모델={TRANSLATE_MODEL}")
+        log_info(f"🔄 번역 시작: 엔진={TRANSLATION_ENGINE} (일본어 → 한국어)")
         
-        # 모델 로드
+        # 번역기 초기화
         try:
-            log_info(f"   모델 로딩중: {TRANSLATE_MODEL}...")
-            log_info(f"   캐시 디렉토리: {HF_HOME}")
-            
-            # CPU 사용으로 설정 (device=-1)
-            translator = pipeline(
-                "translation", 
-                model=TRANSLATE_MODEL,
-                device=-1,  # CPU 사용
-                model_kwargs={"low_cpu_mem_usage": True}
-            )
-            log_info(f"   ✓ 모델 로딩 완료")
+            translator = google_translator()
+            log_info(f"   ✓ Google Translate 준비 완료")
         except Exception as e:
-            log_error(f"   ❌ 모델 로딩 실패: {e}")
-            log_error(f"   💡 해결 방법:")
-            log_error(f"      1. 네트워크 연결 확인")
-            log_error(f"      2. HuggingFace 모델 다운로드: https://huggingface.co/Helsinki-NLP/opus-mt-ja-ko")
-            log_error(f"      3. 캐시에 저장된 모델이 있는지 확인: {HF_HOME}")
-            log_exception("Model loading error")
+            log_error(f"   ❌ 번역기 초기화 실패: {e}")
+            log_exception("Translator initialization error")
             return None
         
         # 청크 단위로 번역
@@ -289,29 +267,11 @@ def translate_text(text: str) -> Optional[str]:
             try:
                 log_info(f"   청크 {chunk_idx}/{len(parts)} 번역중 ({len(chunk)}자)...")
                 
-                # 번역 수행
-                result = translator(chunk)
+                # Google Translate로 번역 (일본어 → 한국어)
+                translated_text = translator.translate(chunk, lang_src='ja', lang_tgt='ko')
                 
-                # 결과 추출
-                translated_text = ""
-                if isinstance(result, list) and len(result) > 0:
-                    first = result[0]
-                    if isinstance(first, dict):
-                        if 'translation_text' in first:
-                            translated_text = first['translation_text']
-                        elif 'label' in first:
-                            translated_text = first.get('label', '')
-                        else:
-                            translated_text = str(first)
-                    else:
-                        translated_text = str(first)
-                elif isinstance(result, str):
-                    translated_text = result
-                else:
-                    translated_text = str(result)
-                
-                if translated_text:
-                    translated_parts.append(translated_text)
+                if translated_text and str(translated_text).strip():
+                    translated_parts.append(str(translated_text))
                     log_info(f"   ✓ 청크 {chunk_idx} 완료: {len(translated_text)}자")
                 else:
                     log_error(f"   ⚠️ 청크 {chunk_idx} 결과 없음")
@@ -320,6 +280,7 @@ def translate_text(text: str) -> Optional[str]:
                 log_error(f"   ❌ 청크 {chunk_idx} 번역 실패: {e}")
                 log_exception(f"Chunk {chunk_idx} translation error")
                 # 계속 진행
+                time.sleep(1)  # API 요청 제한 대비
         
         # 번역 결과 합치기
         if translated_parts:
@@ -359,12 +320,12 @@ def save_translation(conn: psycopg2.extensions.connection,
             VALUES (%s, %s, %s)
             ON CONFLICT (chapter_id, engine) DO UPDATE 
             SET content = EXCLUDED.content
-        """, (chapter_id, TRANSLATE_MODEL, translated_content))
+        """, (chapter_id, TRANSLATION_ENGINE, translated_content))
         
         conn.commit()
         cur.close()
         
-        log_info(f"✓ DB에 번역 저장: chapter_id={chapter_id}, engine={TRANSLATE_MODEL}")
+        log_info(f"✓ DB에 번역 저장: chapter_id={chapter_id}, engine={TRANSLATION_ENGINE}")
         return True
     
     except Exception as e:
@@ -403,7 +364,7 @@ def process_one_chapter(conn: psycopg2.extensions.connection) -> bool:
     log_info(f"   제목: {title}")
     log_info(f"   URL: {url}")
     log_info(f"   원본 크기: {len(content)}자")
-    log_info(f"   모델: {TRANSLATE_MODEL}")
+    log_info(f"   엔진: {TRANSLATION_ENGINE}")
     log_info(f"="*70)
     
     # 번역 수행
@@ -421,6 +382,7 @@ def process_one_chapter(conn: psycopg2.extensions.connection) -> bool:
     log_info(f"✅ 챕터 번역 완료: ID={chapter_id}")
     log_info(f"   제목: {title}")
     log_info(f"   번역 크기: {len(translated_content)}자")
+    log_info(f"   엔진: {TRANSLATION_ENGINE}")
     log_info(f"="*70 + "\n")
     
     return True
@@ -432,11 +394,12 @@ def main():
     log_info("="*70)
     log_info(f"DB_HOST: {DB_HOST}:{DB_PORT}")
     log_info(f"DB_NAME: {DB_NAME}")
-    log_info(f"TRANSLATE_MODEL: {TRANSLATE_MODEL}")
+    log_info(f"TRANSLATION_ENGINE: {TRANSLATION_ENGINE}")
     log_info(f"MAX_CHARS: {MAX_CHARS}")
     
-    if not HAS_TRANSFORMERS:
-        log_error("❌ transformers 미설치 - 종료")
+    if not HAS_TRANSLATOR:
+        log_error("❌ google_trans_new 미설치 - 종료")
+        log_error("설치: pip install google_trans_new")
         return
     
     # DB 연결

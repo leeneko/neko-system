@@ -1,10 +1,5 @@
-fastapi
-pydantic
-uvicorn
-transformers>=4.30.0
-sentencepiece
+google_trans_new
 beautifulsoup4
 requests
 DrissionPage
-pyinstaller
 psycopg2-binary>=2.9.0
