@@ -7,4 +7,4 @@ beautifulsoup4
 requests
 DrissionPage
 pyinstaller
-transformers
+psycopg2-binary>=2.9.0

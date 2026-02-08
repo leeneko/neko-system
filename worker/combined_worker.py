@@ -15,16 +15,13 @@
   2. URL 크롤링 (fetch_html) - 실패 시 브라우저 자동화 사용
   3. HTML에서 소설 본문 추출 (extract_text_from_html)
   4. 다음 챕터 링크 추출 (extract_next_url)
-  5. 선택적 번역 (Hugging Face transformers)
-  6. 파일 저장 및 결과 전송 (post_result)
-  7. 라운드-로빈으로 다음 소설 작업 처리
+  5. 파일 저장 및 결과 전송 (post_result)
+  6. 라운드-로빈으로 다음 소설 작업 처리
+  ※ 번역은 translate_worker.py에서 별도로 처리
 
 환경변수:
   - OCI_SERVER_URL: OCI 서버 주소 (예: http://144.24.87.146:8001)
   - PROXY_LIST: 프록시 리스트 (;로 구분, 예: http://p1:8080;http://p2:8080)
-  - ENABLE_TRANSLATION: 번역 활성화 (True/False)
-  - TRANSLATE_MODEL: 번역 모델 (예: Helsinki-NLP/opus-mt-ja-ko)
-  - MAX_CHARS: 한 번에 번역할 최대 문자 수 (예: 512)
   - DRISSION_PORT: 드래싱페이지 Chrome 포트 (기본값: 9222)
   - DRISSION_MANUAL_WAIT: CAPTCHA 대기 시간(초) (기본값: 600)
   - WORKER_BUFFER_SIZE: 한 번에 미리 로드할 작업 수 (기본값: 10)
@@ -61,17 +58,19 @@ try:
 
     log_file = os.path.join(base_for_logs, "error.log")
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.WARNING)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logging.getLogger().addHandler(file_handler)
-    # Also log where the file is written
-    print(f"Logging to {log_file}")
 except Exception as e:
     print(f"Warning: Could not set up file logging: {e}")
 
 def log_info(msg): 
-    """정보 로그 출력"""
-    logging.info(msg)
+    """정보 로그 출력 (INFO는 출력하지 않음)"""
+    pass
+
+def log_debug(msg):
+    """디버그 로그 출력"""
+    logging.debug(msg)
 
 def log_error(msg): 
     """에러 로그 출력"""
@@ -90,12 +89,10 @@ def log_exception(msg):
 try:
     from DrissionPage import ChromiumPage, ChromiumOptions
     HAS_DRISSION = True
-    log_info("✓ DrissionPage 설치됨 (Cloudflare 우회 가능)")
 except Exception:
     ChromiumPage = None
     ChromiumOptions = None
     HAS_DRISSION = False
-    log_info("✗ DrissionPage 미설치 (requests만 사용)")
 
 # ============================================================================
 # 전역 설정
@@ -112,11 +109,8 @@ PROXY_LIST = []
 if os.environ.get("PROXY_LIST"):
     PROXY_LIST = [p.strip() for p in os.environ.get("PROXY_LIST", "").split(";") if p.strip()]
 
-# 번역 설정
-ENABLE_TRANSLATION = os.environ.get("ENABLE_TRANSLATION", "False").lower() == "true"
-TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "Helsinki-NLP/opus-mt-ja-ko")
-MAX_CHARS = int(os.environ.get("MAX_CHARS", "512"))
-TRANSLATION_ENGINE = "transformers"
+# 번역 설정 (translate_worker.py에서 별도로 처리)
+ENABLE_TRANSLATION = False  # 번역은 별도 translate_worker.py에서 처리
 
 # DrissionPage (브라우저) 설정
 DRISSION_PORT = int(os.environ.get("DRISSION_PORT", "9222"))
@@ -163,7 +157,6 @@ def load_server_url():
                 content = f.read().strip()
                 if content.startswith("http"):
                     url = content
-                    log_info(f"✓ config.txt에서 서버 주소 로드: {url}")
         except Exception as e:
             log_error(f"config.txt 읽기 실패: {e}")
     
@@ -188,7 +181,7 @@ def get_next_task(server_url: str) -> Optional[dict]:
         url = _build_url(server_url, GET_ENDPOINT)
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
-            log_error(f"get_next_task returned {r.status_code}: {r.text[:1000]}")
+            log_error(f"get_next_task HTTP {r.status_code}")
             return None
         j = r.json()
         if not j:
@@ -226,15 +219,11 @@ def post_result(server_url: str, payload: dict):
             "title": payload.get("title", "") or payload.get("chapter_title", ""),
             "content": payload.get("content", "") or payload.get("body", ""),
             "next_url": payload.get("next_url") or payload.get("next"),
-            "translation": payload.get("translation", ""),
-            "translation_engine": payload.get("translation_engine", TRANSLATION_ENGINE),
         }
         headers = {"Content-Type": "application/json"}
         r = requests.post(url, headers=headers, json=body, timeout=20)
         if r.status_code >= 400:
-            log_error(f"post_result returned {r.status_code}: {r.text}")
-        else:
-            log_info(f"post_result success: {r.status_code}")
+            log_error(f"post_result HTTP {r.status_code}")
         return r
     except Exception:
         log_exception("post_result failed")
@@ -246,9 +235,7 @@ def post_fail(server_url: str, payload: dict):
         headers = {"Content-Type": "application/json"}
         r = requests.post(url, headers=headers, json=payload, timeout=20)
         if r.status_code >= 400:
-            log_error(f"post_fail returned {r.status_code}: {r.text}")
-        else:
-            log_info(f"post_fail success: {r.status_code}")
+            log_error(f"post_fail HTTP {r.status_code}")
         return r
     except Exception:
         log_exception("post_fail failed")
@@ -281,7 +268,7 @@ def _find_chrome_executable():
 def start_chrome_background(port: int = 9222, user_data_dir: str = None, headful: bool = True):
     exe = _find_chrome_executable()
     if not exe:
-        log_error("No chrome/chromium binary found to start")
+        log_error("Chrome/Chromium binary not found")
         return False
     if not user_data_dir:
         user_data_dir = os.path.join(_base_dir, "chrome_profile")
@@ -295,11 +282,9 @@ def start_chrome_background(port: int = 9222, user_data_dir: str = None, headful
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(f'start "" "{exe}" {" ".join(args[1:])}\n')
             subprocess.Popen(["cmd", "/c", bat], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log_info("Started Chrome via ChromeStart.bat")
             return True
         else:
             subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-            log_info(f"Started Chrome background: {exe} --remote-debugging-port={port}")
             return True
     except Exception:
         log_exception("start_chrome_background failed")
@@ -308,7 +293,6 @@ def start_chrome_background(port: int = 9222, user_data_dir: str = None, headful
 def init_drission_connection():
     global BROWSER_PAGE
     if not HAS_DRISSION:
-        log_info("DrissionPage not installed; skipping browser attach")
         return
     try:
         co = ChromiumOptions()
@@ -327,10 +311,9 @@ def init_drission_connection():
         # try attach first
         try:
             BROWSER_PAGE = ChromiumPage(co)
-            log_info(f"DrissionPage connected to Chrome on port {DRISSION_PORT}")
             return
         except Exception:
-            log_info("No existing Chrome on port, will try to start one")
+            pass
 
         # try to start Chrome then attach
         if not start_chrome_background(port=DRISSION_PORT, headful=True):
@@ -341,22 +324,15 @@ def init_drission_connection():
             try:
                 time.sleep(1)
                 BROWSER_PAGE = ChromiumPage(co)
-                log_info(f"DrissionPage attached after starting Chrome on port {DRISSION_PORT}")
                 return
             except Exception:
                 continue
 
-        log_error("Failed to attach to Chrome after starting it")
+        log_error("Failed to attach to Chrome")
         BROWSER_PAGE = None
     except Exception:
         log_exception("init_drission_connection failed")
         BROWSER_PAGE = None
-
-# Log translation config at startup
-try:
-    log_info(f"ENABLE_TRANSLATION={ENABLE_TRANSLATION} TRANSLATE_MODEL={TRANSLATE_MODEL} MAX_CHARS={MAX_CHARS}")
-except Exception:
-    pass
 
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     status = None
@@ -368,18 +344,16 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
             "Accept-Language": "en-US,en;q=0.9"
         }
         s = requests.Session()
-        # If proxies are configured via PROXY_LIST env var, pick a random one
         if PROXY_LIST:
             proxy = random.choice(PROXY_LIST)
             if proxy:
                 s.proxies.update({"http": proxy, "https": proxy})
-                log_info(f"Using proxy for fetch: {proxy}")
         r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         status = getattr(r, "status_code", None)
         body_snip = getattr(r, "text", "")[:1200]
         if status == 200:
             return r.text
-        log_error(f"Failed to fetch url: {url} (HTTP {status}) body={body_snip[:800]}")
+        log_error(f"Failed to fetch {url}: HTTP {status}")
         challenge_keywords = ("just a moment", "cf-challenge", "checking your browser", "cloudflare", "captcha")
         is_challenge = any(k in body_snip.lower() for k in challenge_keywords)
         if status != 403 and not is_challenge:
@@ -389,26 +363,23 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
             status = e.response.status_code if getattr(e, "response", None) is not None else None
         except Exception:
             status = None
-        log_error(f"Failed to fetch url: {url} (HTTP {status})")
+        log_error(f"Failed to fetch {url}: HTTP {status}")
         if status != 403:
-            log_exception(f"requests exception for {url}")
             return None
         is_challenge = True
 
     if not (status == 403 or is_challenge):
         return None
     if not HAS_DRISSION:
-        log_error("403/challenge and no DrissionPage; skipping browser attempt")
+        log_error("Cloudflare challenge and DrissionPage not available")
         return None
 
     page = None
     created_local = False
     try:
-        # prefer persistent BROWSER_PAGE
         if BROWSER_PAGE:
             page = BROWSER_PAGE
         else:
-            # create temporary options
             opts = None
             try:
                 opts = ChromiumOptions()
@@ -423,20 +394,15 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                     pass
             except Exception:
                 opts = None
-            # try multiple constructors
             try:
-                if opts is not None:
-                    page = ChromiumPage(opts)
-                else:
-                    page = ChromiumPage()
+                page = ChromiumPage(opts) if opts is not None else ChromiumPage()
                 created_local = True
             except Exception:
-                log_exception("Failed to create temporary ChromiumPage")
+                log_exception("Failed to create ChromiumPage")
                 return None
 
         # navigate
         opened = False
-        # If persistent page already at or containing the URL, reuse it (avoid reload)
         try:
             current_url = None
             if hasattr(page, "url"):
@@ -464,15 +430,15 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                 page.driver.get(url)
                 opened = True
             except Exception:
-                opened = False
+                pass
         if not opened:
-            log_error("Browser opened but couldn't navigate to URL")
+            log_error("Browser failed to navigate to URL")
             return None
 
         start = time.time()
         html = None
         challenge_detected = False
-        log_info(f"Starting browser page source retrieval for {url} with {MANUAL_WAIT_SECONDS}s timeout")
+        log_error(f"[Browser] Loading {url} with {MANUAL_WAIT_SECONDS}s timeout")
         while True:
             val = None
             getters = ("get_page_source","get_page_html","get_html","get_source","page_source","html","get_html_source","get_page")
@@ -483,15 +449,13 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                         val = attr() if callable(attr) else attr
                         if isinstance(val, str) and val.strip():
                             break
-                except Exception as e:
+                except Exception:
                     val = None
                     continue
             if not val and hasattr(page, "driver"):
                 try:
-                    drv = page.driver
-                    if hasattr(drv, "page_source"):
-                        val = drv.page_source
-                except Exception as e:
+                    val = page.driver.page_source
+                except Exception:
                     val = None
 
             if isinstance(val, str) and val.strip():
@@ -500,23 +464,18 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                 has_challenge = any(k in snippet for k in challenge_keywords)
                 
                 if not has_challenge:
-                    log_info(f"Page loaded successfully (no challenge detected)")
                     html = val
                     break
                 else:
                     if not challenge_detected:
                         challenge_detected = True
-                        log_info(f"Challenge/captcha detected. Waiting for user to complete it...")
+                        log_error(f"[Browser] Challenge detected, waiting for completion...")
             
             elapsed = int(time.time() - start)
             if elapsed % 10 == 0:
-                status_msg = "Challenge/captcha still detected" if challenge_detected else "Waiting for page load"
-                log_info(f"{status_msg} for {url}: elapsed {elapsed}s (up to {MANUAL_WAIT_SECONDS}s)")
+                log_error(f"[Browser] Still waiting for {url}... {elapsed}s / {MANUAL_WAIT_SECONDS}s")
             if time.time() - start > MANUAL_WAIT_SECONDS:
-                if challenge_detected:
-                    log_error(f"Challenge timeout after {MANUAL_WAIT_SECONDS}s for {url}. User did not complete captcha in time.")
-                else:
-                    log_error(f"Page load timeout after {MANUAL_WAIT_SECONDS}s for {url}")
+                log_error(f"[Browser] Timeout after {MANUAL_WAIT_SECONDS}s for {url}")
                 break
             time.sleep(3)
 
@@ -837,8 +796,6 @@ def save_text_file(dirpath, title, suffix, content):
 
 # directories
 ORIGINAL_DIR = os.path.join(_base_dir, "download", "original")
-TRANSLATION_DIR = os.path.join(_base_dir, "download", "translation")
-COMBINED_DIR = os.path.join(_base_dir, "download", "combined")
 
 def process_task(task: dict, server_url: str):
     try:
@@ -970,98 +927,15 @@ def process_task(task: dict, server_url: str):
         else:
             log_info(f"✓ Next chapter URL (normalized): {normalized_next}")
 
-        translated = ""
-        
-        # Detect if this is syosetu (Japanese site) - only translate for syosetu
-        is_syosetu = "syosetu" in url.lower() or url.lower().endswith(".com")
-        is_syosetu_by_html = False
-        try:
-            soup = BeautifulSoup(html, "html.parser")
-            is_syosetu_by_html = soup.select_one('article.p-novel') is not None
-        except Exception:
-            pass
-        
-        is_syosetu = is_syosetu or is_syosetu_by_html
-        
-        if is_syosetu:
-            log_info(f"📖 [SYOSETU] Translation config: ENABLE_TRANSLATION={ENABLE_TRANSLATION}, MODEL={TRANSLATE_MODEL}, MAX_CHARS={MAX_CHARS}")
-        else:
-            log_info(f"📚 [BOOKTOKI] Skipping translation (Korean site, no translation needed)")
-        
-        if ENABLE_TRANSLATION and is_syosetu:
-            # Attempt to translate using HuggingFace pipeline if available.
-            # Only for syosetu (Japanese novels)
-            try:
-                log_info(f"🔄 Starting translation with model {TRANSLATE_MODEL}...")
-                from transformers import pipeline
-                
-                # Load model with detailed logging
-                try:
-                    log_info(f"   Loading model: {TRANSLATE_MODEL}")
-                    translator = pipeline("translation", model=TRANSLATE_MODEL)
-                    log_info(f"   ✓ Model loaded successfully")
-                except Exception as model_load_err:
-                    log_error(f"   ❌ Failed to load model: {model_load_err}")
-                    log_exception(f"   Model loading error")
-                    translator = None
-                    raise model_load_err
-                
-                # Split text into chunks
-                parts = [original_text[i:i+MAX_CHARS] for i in range(0, len(original_text), MAX_CHARS)]
-                log_info(f"   Split into {len(parts)} chunks (max {MAX_CHARS} chars each)")
-                
-                translated_parts = []
-                for chunk_idx, p in enumerate(parts, 1):
-                    try:
-                        log_info(f"   Translating chunk {chunk_idx}/{len(parts)} ({len(p)} chars)...")
-                        out = translator(p)
-                        
-                        # Typical output: [{'translation_text': '...'}]
-                        translated_text = ""
-                        if isinstance(out, list) and len(out) > 0:
-                            first = out[0]
-                            if isinstance(first, dict) and 'translation_text' in first:
-                                translated_text = first['translation_text']
-                            elif isinstance(first, dict) and 'label' in first:
-                                translated_text = first.get('label','')
-                            else:
-                                translated_text = str(first)
-                        elif isinstance(out, str):
-                            translated_text = out
-                        else:
-                            translated_text = str(out)
-                        
-                        if translated_text:
-                            translated_parts.append(translated_text)
-                            log_info(f"   ✓ Chunk {chunk_idx} translated: {len(translated_text)} chars")
-                        else:
-                            log_error(f"   ⚠️ Chunk {chunk_idx} returned empty result")
-                    except Exception as chunk_err:
-                        log_error(f"   ❌ Chunk {chunk_idx} translation failed: {chunk_err}")
-                        log_exception(f"   Translation chunk {chunk_idx} error")
-                
-                translated = "\n\n".join([t for t in translated_parts if t])
-                if translated:
-                    log_info(f"✓ Translation complete: {len(translated)} total characters")
-                else:
-                    log_error(f"⚠️ Translation produced empty result despite {len(parts)} chunks")
-            except Exception as trans_err:
-                log_error(f"❌ Translation failed: {trans_err}")
-                log_exception(f"Translation error")
-                translated = ""
-
-        if translated:
-            save_text_file(TRANSLATION_DIR, title or url, "_trans", translated)
-
-        combined_content = original_text + ("\n\n==== TRANSLATION ====\n\n" + translated if translated else "")
-        combined_path = save_text_file(COMBINED_DIR, title or url, "_combined", combined_content)
+        # 번역은 translate_worker.py에서 별도로 처리
+        # combined_worker는 원본 텍스트만 추출하여 저장
 
         result = {
             "id": task_id,
             "chapter_id": task_id,
             "url": url,
             "title": title,
-            "content": combined_content,
+            "content": original_text,
             # Send only normalized absolute next_url to server to avoid ambiguity
             "next_url": normalized_next
         }
@@ -1071,8 +945,7 @@ def process_task(task: dict, server_url: str):
         log_info(f"✅ TASK COMPLETED: {task_id}")
         log_info(f"   Title: {title}")
         log_info(f"   Original text: {len(original_text)} chars")
-        log_info(f"   Translation: {len(translated) if translated else 0} chars")
-        log_info(f"   Combined file: {combined_path}")
+        log_info(f"   (번역은 translate_worker.py에서 별도로 처리됨)")
         if normalized_next:
             log_info(f"   Next chapter: {normalized_next}")
         else:
