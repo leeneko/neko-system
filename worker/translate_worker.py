@@ -128,6 +128,10 @@ MAX_CHARS = int(os.environ.get("MAX_CHARS", "512"))
 # 워커 설정
 WORKER_INTERVAL = int(os.environ.get("WORKER_INTERVAL", "2"))
 
+# HuggingFace 캐시 디렉토리 설정
+HF_HOME = os.environ.get("HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface"))
+os.environ["HF_HOME"] = HF_HOME
+
 # ============================================================================
 # 번역 관련 설정 확인
 # ============================================================================
@@ -193,11 +197,13 @@ def get_chapter_to_translate(conn: psycopg2.extensions.connection) -> Optional[D
     try:
         cur = conn.cursor()
         
-        # 원본만 있고 번역이 없는 챕터 찾기
+        # 원본만 있고 번역이 없는 챕터 찾기 (일본어 소설만)
         cur.execute(f"""
             SELECT c.id, c.url, c.title, c.content
             FROM chapters c
-            WHERE c.content IS NOT NULL 
+            JOIN novels n ON c.novel_id = n.id
+            WHERE n.source_language = 'ja'
+              AND c.content IS NOT NULL 
               AND c.content != ''
               AND NOT EXISTS (
                   SELECT 1 FROM chapter_translations ct
@@ -255,10 +261,22 @@ def translate_text(text: str) -> Optional[str]:
         # 모델 로드
         try:
             log_info(f"   모델 로딩중: {TRANSLATE_MODEL}...")
-            translator = pipeline("translation", model=TRANSLATE_MODEL)
+            log_info(f"   캐시 디렉토리: {HF_HOME}")
+            
+            # CPU 사용으로 설정 (device=-1)
+            translator = pipeline(
+                "translation", 
+                model=TRANSLATE_MODEL,
+                device=-1,  # CPU 사용
+                model_kwargs={"low_cpu_mem_usage": True}
+            )
             log_info(f"   ✓ 모델 로딩 완료")
         except Exception as e:
             log_error(f"   ❌ 모델 로딩 실패: {e}")
+            log_error(f"   💡 해결 방법:")
+            log_error(f"      1. 네트워크 연결 확인")
+            log_error(f"      2. HuggingFace 모델 다운로드: https://huggingface.co/Helsinki-NLP/opus-mt-ja-ko")
+            log_error(f"      3. 캐시에 저장된 모델이 있는지 확인: {HF_HOME}")
             log_exception("Model loading error")
             return None
         
