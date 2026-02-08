@@ -133,13 +133,13 @@ WORKER_INTERVAL = int(os.environ.get("WORKER_INTERVAL", "2"))
 # ============================================================================
 
 try:
-    from google_trans_new import google_translator
+    from googletrans import Translator
     HAS_TRANSLATOR = True
-    log_info("✓ google_trans_new 설치됨 (Google Translate 사용)")
+    log_info("✓ googletrans 설치됨 (Google Translate 사용)")
 except Exception as e:
     HAS_TRANSLATOR = False
-    log_error(f"❌ google_trans_new 미설치: {e}")
-    log_error("설치: pip install google_trans_new")
+    log_error(f"❌ googletrans 미설치: {e}")
+    log_error("설치: pip install googletrans==4.0.0")
 
 # ============================================================================
 # DB 연결 함수
@@ -190,13 +190,12 @@ def get_chapter_to_translate(conn: psycopg2.extensions.connection) -> Optional[D
     try:
         cur = conn.cursor()
         
-        # 원본만 있고 번역이 없는 챕터 찾기 (일본어 소설만)
+        # 원본만 있고 번역이 없는 챕터 찾기 (모든 챕터)
+        # TODO: novels 테이블에 source_language 칼럼을 추가한 후 필터링 추가
         cur.execute(f"""
             SELECT c.id, c.url, c.title, c.content
             FROM chapters c
-            JOIN novels n ON c.novel_id = n.id
-            WHERE n.source_language = 'ja'
-              AND c.content IS NOT NULL 
+            WHERE c.content IS NOT NULL 
               AND c.content != ''
               AND NOT EXISTS (
                   SELECT 1 FROM chapter_translations ct
@@ -261,7 +260,7 @@ def translate_text(text: str) -> Optional[str]:
         
         # 번역기 초기화
         try:
-            translator = google_translator()
+            translator = Translator()
             log_info(f"   ✓ Google Translate 준비 완료")
         except Exception as e:
             log_error(f"   ❌ 번역기 초기화 실패: {e}")
@@ -278,7 +277,8 @@ def translate_text(text: str) -> Optional[str]:
                 log_info(f"   청크 {chunk_idx}/{len(parts)} 번역중 ({len(chunk)}자)...")
                 
                 # Google Translate로 번역 (일본어 → 한국어)
-                translated_text = translator.translate(chunk, lang_src='ja', lang_tgt='ko')
+                result = translator.translate(chunk, src_language='ja', dest_language='ko')
+                translated_text = result.text if result else None
                 
                 if translated_text and str(translated_text).strip():
                     translated_parts.append(str(translated_text))
@@ -408,8 +408,8 @@ def main():
     log_info(f"MAX_CHARS: {MAX_CHARS}")
     
     if not HAS_TRANSLATOR:
-        log_error("❌ google_trans_new 미설치 - 종료")
-        log_error("설치: pip install google_trans_new")
+        log_error("❌ googletrans 미설치 - 종료")
+        log_error("설치: pip install googletrans==4.0.0")
         return
     
     # DB 연결

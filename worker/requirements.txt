@@ -1,4 +1,4 @@
-google_trans_new
+googletrans==4.0.0
 beautifulsoup4
 requests
 DrissionPage
