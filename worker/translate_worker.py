@@ -160,6 +160,8 @@ def get_db_connection() -> Optional[psycopg2.extensions.connection]:
             dbname=DB_NAME,
             connect_timeout=10
         )
+        # 자동 커밋 활성화 (SELECT 쿼리는 자동으로 커밋됨)
+        conn.set_session(autocommit=True)
         return conn
     except psycopg2.Error as e:
         log_error(f"DB 연결 실패: {e}")
@@ -216,6 +218,14 @@ def get_chapter_to_translate(conn: psycopg2.extensions.connection) -> Optional[D
                 "content": row[3]
             }
         
+        return None
+    except psycopg2.errors.InFailedSqlTransaction:
+        log_error("DB 트랜잭션 실패 - 연결 복구 중...")
+        try:
+            conn.rollback()  # 명시적으로 롤백
+            log_info("✓ 연결 복구 완료")
+        except Exception:
+            pass
         return None
     except Exception as e:
         log_error(f"챕터 조회 실패: {e}")
@@ -435,25 +445,28 @@ def main():
                 break
             
             except Exception as e:
+                error_msg = str(e)
                 log_error(f"⚠️ 처리 중 오류 발생: {e}")
                 log_exception("Main loop error")
-                log_info(f"⏳ {WORKER_INTERVAL}초 대기 후 재시도...")
-                time.sleep(WORKER_INTERVAL)
                 
-                # DB 연결 상태 확인
-                try:
-                    if conn.closed:
-                        log_info("🔄 DB 재연결중...")
-                        conn = get_db_connection()
-                        if not conn:
-                            log_error("❌ DB 재연결 실패")
-                            time.sleep(5)
-                except Exception:
+                # DB 트랜잭션 에러 또는 연결 에러 감지
+                if "InFailedSqlTransaction" in error_msg or "OperationalError" in error_msg or "closed" in error_msg.lower():
                     log_info("🔄 DB 재연결중...")
+                    try:
+                        if conn and not conn.closed:
+                            conn.close()
+                    except Exception:
+                        pass
                     conn = get_db_connection()
-                    if not conn:
-                        log_error("❌ DB 재연결 실패")
+                    if conn:
+                        log_info("✓ DB 재연결 성공")
+                        time.sleep(1)
+                    else:
+                        log_error("❌ DB 재연결 실패 - 5초 대기")
                         time.sleep(5)
+                else:
+                    log_info(f"⏳ {WORKER_INTERVAL}초 대기 후 재시도...")
+                    time.sleep(WORKER_INTERVAL)
     
     finally:
         if conn:
