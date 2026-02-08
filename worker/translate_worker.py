@@ -53,7 +53,21 @@ import sys
 import time
 import logging
 import traceback
-import psycopg2
+try:
+    import psycopg2
+    HAS_PSYCOPG2 = True
+except Exception:
+    HAS_PSYCOPG2 = False
+    # In a bundled exe the module may be missing; provide a clear message and exit later if used
+    def _missing_db_exit():
+        msg = (
+            "Required module 'psycopg2' not found.\n"
+            "On Windows install the binary wheel package: pip install psycopg2-binary\n"
+            "Then rebuild the EXE ensuring the build environment has the package installed.\n"
+            "If you only want to run without DB access, set DB_HOST='' or run in an environment with psycopg2."
+        )
+        print(msg)
+    # Do not exit immediately here to allow PyInstaller to bundle; we'll check HAS_PSYCOPG2 before DB use.
 from typing import Optional, Dict, List
 
 # ============================================================================
@@ -122,9 +136,15 @@ try:
     from transformers import pipeline
     HAS_TRANSFORMERS = True
     log_info("✓ transformers 설치됨 (번역 기능 활성화)")
-except ImportError:
+except Exception as e:
+    # Catch broad exceptions because importing transformers may raise OSError from torch (DLL load failures)
     HAS_TRANSFORMERS = False
-    log_error("❌ transformers 미설치: pip install transformers torch")
+    log_error(f"❌ transformers or torch import error: {e}")
+    log_error("If running as an EXE, common fixes are:\n"
+              " - Build the EXE on Windows with a CPU-only torch wheel: `pip install torch --index-url https://download.pytorch.org/whl/cpu`\n"
+              " - Ensure Microsoft Visual C++ Redistributable is installed (2015-2019/2017).\n"
+              " - If you need CUDA, install matching CUDA runtime/drivers on target machine.\n"
+              "After fixing the build environment, rebuild the EXE and retry.")
 
 # ============================================================================
 # DB 연결 함수
@@ -132,6 +152,10 @@ except ImportError:
 
 def get_db_connection() -> Optional[psycopg2.extensions.connection]:
     """PostgreSQL DB에 연결"""
+    if not HAS_PSYCOPG2:
+        log_error("psycopg2 not installed in this environment. Cannot connect to DB.")
+        log_error("Install psycopg2-binary and rebuild the EXE, or run in a Python env with psycopg2.")
+        return None
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
