@@ -4,117 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ novel_title }}</title>
-    <style>
-        :root {
-            --bg: #f7f0e8;
-            --bg-accent: #efe3d7;
-            --text: #2a2118;
-            --muted: #6a5b4a;
-            --card: #fff9f2;
-            --border: #e5d6c7;
-            --accent: #c4681b;
-        }
-        body[data-theme="dark"] {
-            --bg: #0c0e12;
-            --bg-accent: #151822;
-            --text: #e5e7eb;
-            --muted: #9aa4b2;
-            --card: #151a24;
-            --border: #252c3a;
-            --accent: #ff9d44;
-        }
-        body[data-theme="light"] {
-            --bg: #f8fbff;
-            --bg-accent: #e9f2ff;
-            --text: #1b2430;
-            --muted: #5b6b7b;
-            --card: #ffffff;
-            --border: #d7e3f3;
-            --accent: #2563eb;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: "Iowan Old Style", "Charter", "Georgia", serif;
-            background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
-                        radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
-                        var(--bg);
-            color: var(--text);
-            padding: 22px 18px 36px;
-        }
-        .wrap { max-width: 720px; margin: 0 auto; }
-        header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-        h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
-        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .btn {
-            border: 1px solid var(--border);
-            background: var(--card);
-            color: var(--text);
-            padding: 8px 10px;
-            border-radius: 10px;
-            text-decoration: none;
-            font-size: 13px;
-        }
-        .theme { display: flex; gap: 6px; }
-        .list { display: grid; gap: 10px; }
-        .item {
-            padding: 12px 14px;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            background: var(--card);
-        }
-        .item a { color: var(--text); text-decoration: none; display: block; font-size: 15px; }
-        .pending { color: var(--muted); font-style: italic; }
-        .genre-box {
-            margin-bottom: 14px;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 12px;
-        }
-        .genre-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-        .genre-tag {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 12px;
-            padding: 2px 8px;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            color: var(--muted);
-            background: var(--bg);
-        }
-        .genre-remove {
-            text-decoration: none;
-            color: var(--muted);
-            font-size: 12px;
-        }
-        .genre-form label { font-size: 12px; color: var(--muted); display: block; margin: 6px 0 4px; }
-        .genre-form input[type="text"] {
-            width: 100%;
-            padding: 8px 10px;
-            border-radius: 10px;
-            border: 1px solid var(--border);
-            background: var(--bg);
-            color: var(--text);
-            font-size: 13px;
-        }
-        .genre-form button {
-            margin-top: 8px;
-            padding: 8px 10px;
-            border-radius: 10px;
-            border: 1px solid var(--accent);
-            color: var(--accent);
-            background: transparent;
-            font-size: 13px;
-            width: 100%;
-        }
-        .genre-options { display: flex; flex-wrap: wrap; gap: 8px; }
-        .genre-options label { font-size: 12px; color: var(--text); }
-    </style>
+    <link rel="stylesheet" href="/common.css">
 </head>
 <body data-theme="{{ theme }}">
     <div class="wrap">
+        <!-- Header and navigation -->
         <header>
             <div>
                 <h1>{{ novel_title }}</h1>
@@ -164,7 +58,7 @@
                 <button id="sort-desc" class="btn">내림차순</button>
                 <span style="color:#666;margin-left:8px;font-size:13px;">(정렬은 로컬에 저장됩니다)</span>
             </div>
-            </div>
+        </div>
 
         <!-- Pagination controls (top) -->
         <div class="pagination-controls" style="display:flex;justify-content:space-between;align-items:center;margin:8px 0;">
@@ -183,14 +77,14 @@
             </div>
         </div>
 
-            <ul id="chapters-list">
+        <ul id="chapters-list">
             {% for c in chapters %}
                 <li data-id="{{ c.id }}" data-title="{{ c.title }}" style="margin:6px 0;list-style:none;">
                 <a href="/web/read/{{ c.id }}" style="text-decoration:none;color:inherit;">{{ c.title or '로딩중...' }}</a>
                 <span class="status" style="margin-left:8px;color:#888;font-size:13px;">{{ c.status }}</span>
                 </li>
             {% endfor %}
-            </ul>
+        </ul>
 
         <!-- Pagination controls (bottom) -->
         <div class="pagination-controls" style="display:flex;justify-content:space-between;align-items:center;margin:8px 0;">
@@ -204,7 +98,7 @@
             </div>
         </div>
 
-            <script>
+        <script>
             (function(){
             const list = document.getElementById('chapters-list');
             const btnAsc = document.getElementById('sort-asc');

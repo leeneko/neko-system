@@ -39,7 +39,7 @@
 """
 
 from fastapi import FastAPI, HTTPException, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -79,7 +79,9 @@ app = FastAPI(title="Rabbit Novel System", version="3.0")
 # ============================================================================
 
 # Jinja2 템플릿 디렉토리 (HTML 파일들)
-templates = Jinja2Templates(directory="templates")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # 지원 테마 목록
 THEMES = {"paper", "dark", "light"}
@@ -448,14 +450,34 @@ def web_read(request: Request, chapter_id: int):
         # 쿠키나 파라미터가 없으면, 번역본이 있으면 'combined', 없으면 'original'
         view_mode = "combined" if translated_content else "original"
     
+    def build_mixed_html(original_text: str, translated_text: str) -> str:
+        orig_lines = original_text.splitlines()
+        trans_lines = translated_text.splitlines()
+        max_len = max(len(orig_lines), len(trans_lines))
+        parts = []
+        for i in range(max_len):
+            o = orig_lines[i] if i < len(orig_lines) else ""
+            t = trans_lines[i] if i < len(trans_lines) else ""
+            if not o.strip():
+                o = "&nbsp;"
+            if not t.strip():
+                t = "&nbsp;"
+            parts.append(
+                f'<div class="line-pair"><div class="line original">{o}</div>'
+                f'<div class="line translated">{t}</div></div>'
+            )
+        return "\n".join(parts)
+
     content_html = content.replace("\n", "<br>")
     translated_html = translated_content.replace("\n", "<br>") if translated_content else None
+    mixed_html = build_mixed_html(content, translated_content) if translated_content else None
     
     response = templates.TemplateResponse("read.html", {
         "request": request,
         "title": title,
         "content": content_html,
         "translated_content": translated_html,
+        "mixed_content": mixed_html,
         "view_mode": view_mode,
         "next_chapter_id": next_chapter_id,
         "novel_id": novel_id,
@@ -680,14 +702,6 @@ def web_request_submit(
         {"request": request, "theme": get_theme(request), "status": status, "all_genres": all_genres}
     )
 
-# =========================================================
-# [기존 API] Client / Worker (그대로 유지)
-# =========================================================
-# ... (기존 add_novel, list_novels, submit_job 등 코드는 그대로 두세요) ...
-# (코드가 길어서 생략했습니다. 위에서 작성한 기존 로직과 동일하게 유지하면 됩니다.)
-# (다만, imports 부분은 위쪽 내용을 따르세요)
-
-# ----------------- (이 아래는 기존 코드 복붙용) -----------------
 @app.post("/client/add")
 def add_novel(data: NovelReq):
     conn = get_db_connection()
@@ -795,3 +809,11 @@ def fail_job(data: JobFail):
         return {"status":"error","msg": str(e)}
     finally:
         conn.close()
+
+@app.get("/common.css", include_in_schema=False)
+def common_css():
+    return FileResponse(os.path.join(TEMPLATES_DIR, "common.css"), media_type="text/css")
+
+@app.get("/scripts.js", include_in_schema=False)
+def scripts_js():
+    return FileResponse(os.path.join(TEMPLATES_DIR, "scripts.js"), media_type="application/javascript")

@@ -97,9 +97,34 @@ def get_chapter_to_translate(conn):
             ORDER BY c.id ASC
             LIMIT 1
         """
-        cur.execute(query, (TRANSLATION_ENGINE,))
-        row = cur.fetchone()
-        cur.close()
+        try:
+            cur.execute(query, (TRANSLATION_ENGINE,))
+            row = cur.fetchone()
+            cur.close()
+        except Exception as e:
+            # 일부 환경에는 novels.source_language 컬럼이 없을 수 있음
+            if "source_language" in str(e):
+                cur.close()
+                log_error("novels.source_language 컬럼이 없어 필터를 제거합니다.")
+                cur = conn.cursor()
+                fallback_query = """
+                    SELECT c.id, c.title, c.content
+                    FROM chapters c
+                    WHERE c.content IS NOT NULL 
+                      AND c.content != ''
+                      AND NOT EXISTS (
+                          SELECT 1 FROM chapter_translations ct
+                          WHERE ct.chapter_id = c.id 
+                            AND ct.engine = %s
+                      )
+                    ORDER BY c.id ASC
+                    LIMIT 1
+                """
+                cur.execute(fallback_query, (TRANSLATION_ENGINE,))
+                row = cur.fetchone()
+                cur.close()
+            else:
+                raise
         
         if row:
             return {"id": row[0], "title": row[1], "content": row[2]}

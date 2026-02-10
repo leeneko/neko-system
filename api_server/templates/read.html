@@ -4,144 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{{ title }} - 읽기</title>
-  <style>
-    /* Theme variables matching chapters.html */
-    :root {
-      --bg: #f7f0e8;
-      --bg-accent: #efe3d7;
-      --text: #2a2118;
-      --muted: #6a5b4a;
-      --card: #fff9f2;
-      --border: #e5d6c7;
-      --accent: #c4681b;
-    }
-    body[data-theme="dark"] {
-      --bg: #0c0e12;
-      --bg-accent: #151822;
-      --text: #e5e7eb;
-      --muted: #9aa4b2;
-      --card: #151a24;
-      --border: #252c3a;
-      --accent: #ff9d44;
-    }
-    body[data-theme="light"] {
-      --bg: #f8fbff;
-      --bg-accent: #e9f2ff;
-      --text: #1b2430;
-      --muted: #5b6b7b;
-      --card: #ffffff;
-      --border: #d7e3f3;
-      --accent: #2563eb;
-    }
-
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; padding: 0; }
-    body {
-      font-family: "Iowan Old Style", "Charter", "Georgia", serif;
-      background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
-                  radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
-                  var(--bg);
-      background-repeat: no-repeat;
-      background-attachment: fixed;
-      background-size: cover;
-      color: var(--text);
-      padding: 22px 18px 36px;
-    }
-
-    .wrap { max-width: 720px; margin: 0 auto; }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-    h1 { font-size: 22px; margin: 0 0 12px 0; letter-spacing: -0.02em; }
-    
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .btn {
-      border: 1px solid var(--border);
-      background: var(--card);
-      color: var(--text);
-      padding: 8px 10px;
-      border-radius: 10px;
-      text-decoration: none;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .btn:hover { opacity: 0.85; }
-    .btn.primary {
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
-    }
-
-    .theme { display: flex; gap: 6px; }
-    
-    .reader-toolbar {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-      margin-bottom: 16px;
-      padding: 10px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-    }
-    .toolbar-group { display: flex; gap: 6px; align-items: center; }
-    .toolbar-group label { font-size: 12px; color: var(--muted); }
-    
-    select, input[type="text"] {
-      padding: 6px 8px;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--bg);
-      color: var(--text);
-      font-size: 12px;
-    }
-
-    .content-area {
-      font-size: 16px;
-      line-height: 1.8;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      background: transparent;
-      border: none;
-      border-radius: 0;
-      padding: 0;
-      margin: 16px 0;
-    }
-
-    .translation-section {
-      margin-top: 20px;
-      padding: 0;
-      background: transparent;
-      border: none;
-      border-radius: 0;
-    }
-    .translation-section h3 { margin: 16px 0 10px 0; font-size: 16px; }
-
-    .nav-buttons {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 16px;
-    }
-
-    #toast {
-      visibility: hidden;
-      min-width: 200px;
-      margin-left: -100px;
-      background-color: rgba(0, 0, 0, 0.85);
-      color: #fff;
-      text-align: center;
-      border-radius: 4px;
-      padding: 10px 14px;
-      position: fixed;
-      z-index: 10000;
-      left: 50%;
-      bottom: 30px;
-      font-size: 14px;
-      opacity: 0;
-      transition: opacity 0.2s ease-in-out;
-    }
-    #toast.show { visibility: visible; opacity: 1; }
-  </style>
+  <link rel="stylesheet" href="/common.css">
 </head>
 <body data-theme="{{ theme }}">
   <div class="wrap">
@@ -204,6 +67,11 @@
       <h3>번역</h3>
       <div id="translated" class="content-area">
         {{ translated_content | safe }}
+      </div>
+    </div>
+    <div class="translation-section" id="mixed-section">
+      <div id="mixed" class="content-area mixed-content">
+        {{ mixed_content | safe }}
       </div>
     </div>
     {% endif %}
@@ -284,6 +152,7 @@
       const btnComb = document.getElementById('view-combined');
       const btnTrans = document.getElementById('view-translation');
       const transSec = document.getElementById('trans-section');
+      const mixedSec = document.getElementById('mixed-section');
       const origSec = document.getElementById('content');
       
       // 번역본이 없으면 모드 전환 기능 제한
@@ -298,15 +167,18 @@
         if(mode === 'original' || !hasTranslation){
           if(origSec) origSec.style.display = 'block';
           if(transSec) transSec.style.display = 'none';
+          if(mixedSec) mixedSec.style.display = 'none';
           if(btnOrig) btnOrig.classList.add('primary');
         } else if(mode === 'translation'){
           if(origSec) origSec.style.display = 'none';
           if(transSec) transSec.style.display = 'block';
+          if(mixedSec) mixedSec.style.display = 'none';
           if(btnTrans) btnTrans.classList.add('primary');
         } else {
           // combined
-          if(origSec) origSec.style.display = 'block';
-          if(transSec) transSec.style.display = 'block';
+          if(origSec) origSec.style.display = 'none';
+          if(transSec) transSec.style.display = 'none';
+          if(mixedSec) mixedSec.style.display = 'block';
           if(btnComb) btnComb.classList.add('primary');
         }
       }

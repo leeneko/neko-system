@@ -4,121 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>소설 요청</title>
-    <style>
-        :root {
-            --bg: #f7f0e8;
-            --bg-accent: #efe3d7;
-            --text: #2a2118;
-            --muted: #6a5b4a;
-            --card: #fff9f2;
-            --border: #e5d6c7;
-            --accent: #c4681b;
-        }
-        body[data-theme="dark"] {
-            --bg: #0c0e12;
-            --bg-accent: #151822;
-            --text: #e5e7eb;
-            --muted: #9aa4b2;
-            --card: #151a24;
-            --border: #252c3a;
-            --accent: #ff9d44;
-        }
-        body[data-theme="light"] {
-            --bg: #f8fbff;
-            --bg-accent: #e9f2ff;
-            --text: #1b2430;
-            --muted: #5b6b7b;
-            --card: #ffffff;
-            --border: #d7e3f3;
-            --accent: #2563eb;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: "Iowan Old Style", "Charter", "Georgia", serif;
-            background: radial-gradient(1200px 600px at 10% -10%, var(--bg-accent), transparent),
-                        radial-gradient(900px 500px at 100% 0%, var(--bg-accent), transparent),
-                        var(--bg);
-            color: var(--text);
-            padding: 22px 18px 36px;
-        }
-        .wrap { max-width: 720px; margin: 0 auto; }
-        header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-        h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
-        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .btn {
-            border: 1px solid var(--border);
-            background: var(--card);
-            color: var(--text);
-            padding: 8px 10px;
-            border-radius: 10px;
-            text-decoration: none;
-            font-size: 13px;
-        }
-        .theme { display: flex; gap: 6px; }
-        .panel {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 18px;
-        }
-        .tabs {
-            display: inline-flex;
-            gap: 6px;
-            padding: 4px;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            background: var(--bg);
-            margin-bottom: 16px;
-        }
-        .tab {
-            border: 1px solid transparent;
-            background: transparent;
-            color: var(--muted);
-            padding: 6px 12px;
-            border-radius: 999px;
-            font-size: 13px;
-            cursor: pointer;
-        }
-        .tab.active {
-            border-color: var(--accent);
-            color: var(--accent);
-            background: var(--card);
-        }
-        label { display: block; font-size: 14px; margin-bottom: 6px; color: var(--muted); }
-        input {
-            width: 100%;
-            padding: 12px 14px;
-            border-radius: 10px;
-            border: 1px solid var(--border);
-            background: var(--card);
-            color: var(--text);
-            font-size: 15px;
-            margin-bottom: 14px;
-        }
-        .hint { font-size: 13px; color: var(--muted); margin-top: -6px; margin-bottom: 12px; }
-        .genre-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-        .genre-options label { font-size: 13px; color: var(--text); }
-        .submit {
-            width: 100%;
-            padding: 12px 14px;
-            border-radius: 12px;
-            border: 1px solid var(--accent);
-            color: var(--accent);
-            background: transparent;
-            font-size: 15px;
-        }
-        .status {
-            margin-top: 14px;
-            padding: 10px 12px;
-            border-radius: 10px;
-            font-size: 14px;
-            border: 1px solid var(--border);
-            background: var(--bg-accent);
-        }
-        .status.success { color: #1d6b2a; border-color: #b7ddc1; background: #eaf7ee; }
-        .status.error { color: #8b1e1e; border-color: #f0b7b7; background: #ffecec; }
-    </style>
+    <link rel="stylesheet" href="/common.css">
 </head>
 <body data-theme="{{ theme }}">
     <div class="wrap">
@@ -169,6 +55,7 @@
             {% endif %}
         </div>
     </div>
+
     <script>
         (function () {
             var tabs = document.querySelectorAll(".tab");
@@ -199,6 +86,8 @@
                     setActive(t.getAttribute("data-site"));
                 });
             });
+
+            setActive("booktoki");
         })();
     </script>
 </body>
