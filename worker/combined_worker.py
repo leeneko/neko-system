@@ -386,6 +386,7 @@ def init_drission_connection():
 def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     status = None
     MANUAL_WAIT_SECONDS = int(os.environ.get("DRISSION_MANUAL_WAIT", "600"))
+    WAIT_LOG_INTERVAL = int(os.environ.get("BROWSER_WAIT_LOG_INTERVAL", "30"))
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -402,9 +403,13 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
         body_snip = getattr(r, "text", "")[:1200]
         if status == 200:
             return r.text
-        log_error(f"Failed to fetch {url}: HTTP {status}")
         challenge_keywords = ("just a moment", "cf-challenge", "checking your browser", "cloudflare", "captcha")
         is_challenge = any(k in body_snip.lower() for k in challenge_keywords)
+        # 403/challenge is expected on protected sites; browser fallback is normal path.
+        if status == 403 or is_challenge:
+            log_info_throttled(f"req403:{url}", f"Direct request blocked ({status}), switching to browser fallback: {url}", 60)
+        else:
+            log_error(f"Failed to fetch {url}: HTTP {status}")
         if status != 403 and not is_challenge:
             return None
     except requests.exceptions.RequestException as e:
@@ -412,7 +417,10 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
             status = e.response.status_code if getattr(e, "response", None) is not None else None
         except Exception:
             status = None
-        log_error(f"Failed to fetch {url}: HTTP {status}")
+        if status == 403:
+            log_info_throttled(f"req403-ex:{url}", f"Direct request blocked ({status}), switching to browser fallback: {url}", 60)
+        else:
+            log_error(f"Failed to fetch {url}: HTTP {status}")
         if status != 403:
             return None
         is_challenge = True
@@ -487,7 +495,7 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
         start = time.time()
         html = None
         challenge_detected = False
-        log_error(f"[Browser] Loading {url} with {MANUAL_WAIT_SECONDS}s timeout")
+        log_info_throttled(f"browser-load:{url}", f"[Browser] Loading {url} with {MANUAL_WAIT_SECONDS}s timeout", 60)
         while True:
             val = None
             getters = ("get_page_source","get_page_html","get_html","get_source","page_source","html","get_html_source","get_page")
@@ -518,11 +526,15 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
                 else:
                     if not challenge_detected:
                         challenge_detected = True
-                        log_error(f"[Browser] Challenge detected, waiting for completion...")
+                        log_info_throttled(f"browser-challenge:{url}", f"[Browser] Challenge detected, waiting for completion...", 60)
             
             elapsed = int(time.time() - start)
-            if elapsed % 10 == 0:
-                log_error(f"[Browser] Still waiting for {url}... {elapsed}s / {MANUAL_WAIT_SECONDS}s")
+            if elapsed % WAIT_LOG_INTERVAL == 0:
+                log_info_throttled(
+                    f"browser-wait:{url}:{elapsed}",
+                    f"[Browser] Still waiting for {url}... {elapsed}s / {MANUAL_WAIT_SECONDS}s",
+                    WAIT_LOG_INTERVAL,
+                )
             if time.time() - start > MANUAL_WAIT_SECONDS:
                 log_error(f"[Browser] Timeout after {MANUAL_WAIT_SECONDS}s for {url}")
                 break
