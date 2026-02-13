@@ -39,6 +39,7 @@ import requests
 import subprocess
 import random
 import re
+from datetime import datetime
 from typing import Optional
 from collections import deque
 
@@ -79,6 +80,15 @@ def log_error(msg):
 def log_exception(msg): 
     """예외 로그 출력 (스택 트레이스 포함)"""
     logging.exception(msg)
+
+_LAST_LOG_TS = {}
+_LAST_STATE_TS = {}
+def log_info_throttled(key: str, msg: str, interval_sec: int = 60):
+    now = time.time()
+    prev = _LAST_LOG_TS.get(key, 0)
+    if now - prev >= interval_sec:
+        _LAST_LOG_TS[key] = now
+        log_info(msg)
 
 # ============================================================================
 # DrissionPage 선택적 설치 (브라우저 자동화 - Cloudflare 우회용)
@@ -166,6 +176,9 @@ def load_server_url():
 GET_ENDPOINT = os.environ.get("OCI_GET_ENDPOINT", "/worker/get")
 RESULT_ENDPOINT = os.environ.get("OCI_RESULT_ENDPOINT", "/worker/submit")
 FAIL_ENDPOINT = os.environ.get("OCI_FAIL_ENDPOINT", "/worker/fail")
+STATE_ENDPOINT = os.environ.get("OCI_STATE_ENDPOINT", "/worker/state")
+WORKER_IDLE_LOG_INTERVAL = int(os.environ.get("WORKER_IDLE_LOG_INTERVAL", "60"))
+WORKER_VERBOSE_INFO = os.environ.get("WORKER_VERBOSE_INFO", "0") == "1"
 
 def _build_url(server_url: str, endpoint: str) -> str:
     if not server_url:
@@ -240,6 +253,30 @@ def post_fail(server_url: str, payload: dict):
     except Exception:
         log_exception("post_fail failed")
         return None
+
+def post_state(server_url: str, payload: dict):
+    try:
+        status = payload.get("status", "IDLE")
+        dedup_key = f"crawler-combined:{status}:{payload.get('chapter_id')}:{payload.get('note')}"
+        now = time.time()
+        prev = _LAST_STATE_TS.get(dedup_key, 0)
+        if now - prev < 10:
+            return
+        _LAST_STATE_TS[dedup_key] = now
+        url = _build_url(server_url, STATE_ENDPOINT)
+        body = {
+            "worker_name": "crawler-combined",
+            "role": "crawler",
+            "status": status,
+            "novel_id": payload.get("novel_id"),
+            "chapter_id": payload.get("chapter_id"),
+            "chapter_title": payload.get("chapter_title"),
+            "note": payload.get("note"),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        requests.post(url, json=body, timeout=5)
+    except Exception:
+        pass
 
 # Chrome utility
 def _find_chrome_executable():
@@ -821,6 +858,13 @@ def process_task(task: dict, server_url: str):
             log_error(f"Task {task_id} missing url")
             return
         log_info(f"Processing task {task_id} url={url}")
+        post_state(server_url, {
+            "status": "CRAWLING",
+            "novel_id": task.get("novel_id"),
+            "chapter_id": task_id,
+            "chapter_title": "",
+            "note": "start",
+        })
         # Track how many times this task has been processed to avoid infinite loops
         try:
             cnt = _REPEAT_COUNTS.get(task_id, 0) + 1
@@ -835,6 +879,12 @@ def process_task(task: dict, server_url: str):
         if not html:
             log_error(f"Fetching failed for task {task_id} url={url} -> notifying server")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "fetch_failed"})
+            post_state(server_url, {
+                "status": "ERROR",
+                "novel_id": task.get("novel_id"),
+                "chapter_id": task_id,
+                "note": "fetch_failed",
+            })
             cnt = _FAILURE_COUNTS.get(task_id, 0) + 1
             _FAILURE_COUNTS[task_id] = cnt
             backoff = min(5 * cnt, 60)
@@ -861,6 +911,12 @@ def process_task(task: dict, server_url: str):
         if original_text is None:
             log_error(f"Cloudflare challenge detected for {url}, will retry")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "cloudflare_challenge"})
+            post_state(server_url, {
+                "status": "ERROR",
+                "novel_id": task.get("novel_id"),
+                "chapter_id": task_id,
+                "note": "cloudflare_challenge",
+            })
             cnt = _FAILURE_COUNTS.get(task_id, 0) + 1
             _FAILURE_COUNTS[task_id] = cnt
             backoff = min(5 * cnt, 60)
@@ -872,6 +928,12 @@ def process_task(task: dict, server_url: str):
             log_error(f"❌ No extracted text for {url} (result was empty or only whitespace)")
             log_error(f"   original_text type: {type(original_text)}, length: {len(original_text) if original_text else 0}")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "no_text"})
+            post_state(server_url, {
+                "status": "ERROR",
+                "novel_id": task.get("novel_id"),
+                "chapter_id": task_id,
+                "note": "no_text",
+            })
             return
         
         log_info(f"✓ Extracted {len(original_text)} characters from {url}")
@@ -992,6 +1054,13 @@ def process_task(task: dict, server_url: str):
                                 log_info(f"Cleared repeat counter for task {task_id} after successful post_result")
                         except Exception:
                             pass
+                        post_state(server_url, {
+                            "status": "IDLE",
+                            "novel_id": task.get("novel_id"),
+                            "chapter_id": task_id,
+                            "chapter_title": cleaned_title,
+                            "note": "crawl_done",
+                        })
                 except Exception:
                     log_exception("Error reading post_result response")
         except Exception:
@@ -999,11 +1068,18 @@ def process_task(task: dict, server_url: str):
     except Exception:
         log_exception("process_task failed")
         post_fail(server_url, {"chapter_id": task.get("id",""), "url": task.get("url",""), "reason":"exception"})
+        post_state(server_url, {
+            "status": "ERROR",
+            "novel_id": task.get("novel_id"),
+            "chapter_id": task.get("id", ""),
+            "note": "process_task_exception",
+        })
 
 def main():
     server_url = load_server_url()
     init_drission_connection()
     log_info("Worker started")
+    post_state(server_url, {"status": "IDLE", "note": "startup"})
 
     # Buffer size controls how many tasks we prefetch into per-novel queues
     buffer_size = int(os.environ.get("WORKER_BUFFER_SIZE", "10"))
@@ -1029,15 +1105,18 @@ def main():
                     if novel_id not in task_queues:
                         task_queues[novel_id] = deque()
                         rotation.append(novel_id)
-                        log_info(f"📚 NEW NOVEL QUEUE: {novel_id}")
+                        if WORKER_VERBOSE_INFO:
+                            log_info(f"📚 NEW NOVEL QUEUE: {novel_id}")
                     task_queues[novel_id].append(task)
                     total_buffered += 1
-                    queue_status = " | ".join([f"{nid}: {len(q)}" for nid, q in task_queues.items()])
-                    log_info(f"📥 Buffered task {task.get('id')} for novel {novel_id} | Queues: [{queue_status}]")
+                    if WORKER_VERBOSE_INFO:
+                        queue_status = " | ".join([f"{nid}: {len(q)}" for nid, q in task_queues.items()])
+                        log_info(f"📥 Buffered task {task.get('id')} for novel {novel_id} | Queues: [{queue_status}]")
 
                 # If no buffered tasks, wait briefly and retry
                 if not rotation:
-                    log_info("⏸️  No novels in rotation, waiting for new tasks...")
+                    log_info_throttled("no_rotation", "⏸️  No novels in rotation, waiting for new tasks...", WORKER_IDLE_LOG_INTERVAL)
+                    post_state(server_url, {"status": "IDLE", "note": "no_queue"})
                     time.sleep(2)
                     continue
 
@@ -1045,8 +1124,9 @@ def main():
                 if rot_idx >= len(rotation):
                     rot_idx = 0
                 current_novel = rotation[rot_idx]
-                rotation_str = " → ".join(rotation)
-                log_info(f"🔁 ROTATION ORDER: [{rotation_str}] | Current: {current_novel} (index {rot_idx})")
+                if WORKER_VERBOSE_INFO:
+                    rotation_str = " → ".join(rotation)
+                    log_info(f"🔁 ROTATION ORDER: [{rotation_str}] | Current: {current_novel} (index {rot_idx})")
 
                 # If queue empty (possible due to removal), advance
                 if current_novel not in task_queues or not task_queues[current_novel]:
@@ -1073,7 +1153,8 @@ def main():
                 # Small random delay between tasks to avoid macro detection
                 # Reduced from 5-12s to 1-3s for faster processing
                 jitter = random.uniform(1.0, 3.0)
-                log_info(f"⏳ Waiting {jitter:.1f}s before next task...")
+                if WORKER_VERBOSE_INFO:
+                    log_info(f"⏳ Waiting {jitter:.1f}s before next task...")
                 time.sleep(jitter)
 
             except KeyboardInterrupt:
@@ -1084,6 +1165,7 @@ def main():
                 time.sleep(5)
     finally:
         log_info("Worker shutting down")
+        post_state(server_url, {"status": "DOWN", "note": "shutdown"})
 
 
 if __name__ == "__main__":

@@ -10,10 +10,14 @@
     <div class="wrap">
         <header>
             <div>
-                <h1>Bookshelf</h1>
+                <a class="brand" href="/web">
+                    <h1>Bookshelf</h1>
+                    <span class="worker-dot {% if worker_ok %}ok{% endif %}" title="워커 상태"></span>
+                </a>
             </div>
             <div class="actions">
                 <a class="btn primary" href="/web/request">소설 요청</a>
+                <a class="btn" href="/web/runtime">실시간 현황</a>
                 <a class="btn primary" href="/web/refresh_all?next={{ current_url_q }}">전체 마지막화 확인</a>
                 <div class="theme">
                     <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>

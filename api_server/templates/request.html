@@ -9,9 +9,13 @@
 <body data-theme="{{ theme }}">
     <div class="wrap">
         <header>
-            <h1>소설 요청</h1>
+            <a class="brand" href="/web">
+                <h1>소설 요청</h1>
+                <span class="worker-dot {% if worker_ok %}ok{% endif %}" title="워커 상태"></span>
+            </a>
             <div class="actions">
                 <a class="btn" href="/web">책장</a>
+                <a class="btn" href="/web/runtime">실시간 현황</a>
                 <div class="theme">
                     <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
                     <a class="btn theme-btn {% if theme == 'dark' %}active{% endif %}" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>

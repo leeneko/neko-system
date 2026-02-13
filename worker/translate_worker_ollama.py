@@ -6,8 +6,10 @@ import gc
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import subprocess
 import time
 from typing import Dict, List, Optional
+from datetime import datetime
 
 import requests
 
@@ -41,6 +43,15 @@ OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 IDLE_SLEEP_SEC = int(os.environ.get("IDLE_SLEEP_SEC", "10"))
 ERROR_SLEEP_SEC = int(os.environ.get("ERROR_SLEEP_SEC", "5"))
 OPTIMIZE_EVERY = int(os.environ.get("OPTIMIZE_EVERY", "10"))
+STATE_ENDPOINT = os.environ.get("OCI_STATE_ENDPOINT", "/worker/state")
+STATE_SERVER_URL = os.environ.get("OCI_SERVER_URL", "http://144.24.87.146:8001")
+IDLE_LOG_INTERVAL_SEC = int(os.environ.get("TRANSLATOR_IDLE_LOG_INTERVAL_SEC", "60"))
+
+# Thermal throttling
+TARGET_GPU_TEMP_C = int(os.environ.get("TARGET_GPU_TEMP_C", "72"))
+TEMP_POLL_INTERVAL_SEC = float(os.environ.get("TEMP_POLL_INTERVAL_SEC", "5"))
+MAX_COOLDOWN_WAIT_SEC = int(os.environ.get("MAX_COOLDOWN_WAIT_SEC", "180"))
+CHUNK_BASE_DELAY_SEC = float(os.environ.get("CHUNK_BASE_DELAY_SEC", "1.5"))
 
 # Log settings
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +63,8 @@ ERROR_LOG_BACKUP_COUNT = int(os.environ.get("ERROR_LOG_BACKUP_COUNT", "5"))
 LOGGER = logging.getLogger("translate_worker_ollama")
 HTTP_SESSION: Optional[requests.Session] = None
 LAST_NOVEL_ID: Optional[int] = None
+LAST_IDLE_LOG_TS = 0.0
+LAST_STATE_TS = {}
 
 
 def setup_logger() -> None:
@@ -84,6 +97,67 @@ def log_info(msg: str) -> None:
 
 def log_error(msg: str) -> None:
     LOGGER.error(msg)
+
+def post_state(status: str, chapter_id: Optional[int] = None, novel_id: Optional[int] = None, chapter_title: Optional[str] = None, note: Optional[str] = None) -> None:
+    try:
+        dedup_key = f"translator-ollama:{status}:{chapter_id}:{note}"
+        now = time.time()
+        prev = LAST_STATE_TS.get(dedup_key, 0)
+        if now - prev < 10:
+            return
+        LAST_STATE_TS[dedup_key] = now
+        requests.post(
+            STATE_SERVER_URL.rstrip("/") + STATE_ENDPOINT,
+            json={
+                "worker_name": "translator-ollama",
+                "role": "translator",
+                "status": status,
+                "novel_id": novel_id,
+                "chapter_id": chapter_id,
+                "chapter_title": chapter_title,
+                "note": note,
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+def read_gpu_temp_c() -> Optional[int]:
+    try:
+        p = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if p.returncode != 0:
+            return None
+        first = (p.stdout or "").strip().splitlines()[0].strip()
+        return int(first)
+    except Exception:
+        return None
+
+def thermal_cooldown_if_needed():
+    temp = read_gpu_temp_c()
+    if temp is None:
+        if CHUNK_BASE_DELAY_SEC > 0:
+            time.sleep(CHUNK_BASE_DELAY_SEC)
+        return
+    if temp < TARGET_GPU_TEMP_C:
+        if CHUNK_BASE_DELAY_SEC > 0:
+            time.sleep(CHUNK_BASE_DELAY_SEC)
+        return
+    waited = 0.0
+    log_info(f"GPU temp high ({temp}C), cooling...")
+    while waited < MAX_COOLDOWN_WAIT_SEC:
+        time.sleep(TEMP_POLL_INTERVAL_SEC)
+        waited += TEMP_POLL_INTERVAL_SEC
+        t = read_gpu_temp_c()
+        if t is None:
+            break
+        if t <= TARGET_GPU_TEMP_C - 2:
+            break
 
 
 def get_http_session() -> requests.Session:
@@ -359,6 +433,7 @@ def translate_text(full_text: str) -> Optional[str]:
         if not chunk.strip():
             translated_chunks.append("")
             continue
+        thermal_cooldown_if_needed()
         log_info(f"   translating chunk {idx}/{len(chunks)} ({len(chunk)} chars)")
         translated = call_ollama(chunk)
         if not translated:
@@ -398,11 +473,12 @@ def main() -> None:
     log_info(f"Rabbit Translation Worker (Ollama): model={MODEL_NAME}")
     log_info(f"engine={TRANSLATION_ENGINE}, optimize_every={OPTIMIZE_EVERY}")
     log_info("=" * 62)
+    post_state("IDLE", note="startup")
 
     if not HAS_PSYCOPG2:
         return
 
-    global LAST_NOVEL_ID
+    global LAST_NOVEL_ID, LAST_IDLE_LOG_TS
     conn = get_db_connection()
     translated_count = 0
 
@@ -411,11 +487,17 @@ def main() -> None:
             conn = ensure_db_connection(conn)
             if not conn:
                 log_error("DB unavailable; retrying after sleep")
+                post_state("ERROR", note="db_unavailable")
                 time.sleep(ERROR_SLEEP_SEC)
                 continue
 
             chapter = get_chapter_to_translate(conn, LAST_NOVEL_ID)
             if not chapter:
+                now = time.time()
+                if now - LAST_IDLE_LOG_TS >= IDLE_LOG_INTERVAL_SEC:
+                    log_info("No chapters to translate, waiting...")
+                    LAST_IDLE_LOG_TS = now
+                post_state("IDLE", note="no_pending_translation")
                 time.sleep(IDLE_SLEEP_SEC)
                 continue
 
@@ -424,15 +506,18 @@ def main() -> None:
             title = chapter["title"] or ""
             content = chapter["content"] or ""
             log_info(f"Start chapter id={chapter_id}, len={len(content)}, title={title}")
+            post_state("TRANSLATING", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="translating")
 
             started = time.time()
             translated_content = translate_text(content)
             if not translated_content:
                 log_error(f"Translation failed for chapter id={chapter_id}")
+                post_state("ERROR", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="translation_failed")
                 time.sleep(ERROR_SLEEP_SEC)
                 continue
 
             if not save_translation(conn, chapter_id, translated_content):
+                post_state("ERROR", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="db_save_failed")
                 time.sleep(ERROR_SLEEP_SEC)
                 continue
 
@@ -442,14 +527,17 @@ def main() -> None:
             translated_count += 1
             elapsed = time.time() - started
             log_info(f"Done chapter id={chapter_id} in {elapsed:.1f}s")
+            post_state("IDLE", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="translation_done")
 
             conn = run_periodic_optimization(conn, translated_count)
 
         except KeyboardInterrupt:
             log_info("Shutdown requested")
+            post_state("DOWN", note="shutdown")
             break
         except Exception as e:
             log_error(f"Unhandled worker error: {e}")
+            post_state("ERROR", note="unhandled_exception")
             time.sleep(ERROR_SLEEP_SEC)
 
     try:
@@ -460,6 +548,7 @@ def main() -> None:
 
     if HTTP_SESSION is not None:
         HTTP_SESSION.close()
+    post_state("DOWN", note="stopped")
 
 
 if __name__ == "__main__":

@@ -10,11 +10,15 @@
   <div class="wrap">
     <!-- Header with navigation -->
     <header>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <a class="btn" href="/web">책장</a>
-        <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
+      <div>
+        <a class="brand" href="/web">
+          <h1>Bookshelf</h1>
+          <span class="worker-dot {% if worker_ok %}ok{% endif %}" title="워커 상태"></span>
+        </a>
       </div>
       <div class="actions">
+        <a class="btn" href="/web/novel/{{ novel_id }}">목록</a>
+        <a class="btn" href="/web/runtime">실시간 현황</a>
         <div class="theme">
           <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next=/web/read/{{ chapter_id }}">Paper</a>
           <a class="btn theme-btn {% if theme == 'dark' %}active{% endif %}" href="/web/theme/dark?next=/web/read/{{ chapter_id }}">Dark</a>

@@ -49,6 +49,7 @@ import json
 from html import escape
 from urllib.parse import quote, unquote
 from typing import Optional, List
+from datetime import datetime, timedelta
 import logging
 
 # ============================================================================
@@ -91,6 +92,7 @@ THEMES = {"paper", "dark", "light"}
 RECENT_COOKIE = "recent_reads"
 RECENT_LIMIT = 20
 MAX_FAIL_RETRY = int(os.environ.get("MAX_FAIL_RETRY", "5"))
+WORKER_STALE_SEC = int(os.environ.get("WORKER_STALE_SEC", "90"))
 
 # 글로벌 띄어쓰기 모델 (처음 사용 시 로드)
 _spacing_model = None
@@ -260,6 +262,16 @@ class JobFail(BaseModel):
     reason: Optional[str] = None
     url: Optional[str] = None
 
+class WorkerState(BaseModel):
+    worker_name: str
+    role: str
+    status: str
+    novel_id: Optional[int] = None
+    chapter_id: Optional[int] = None
+    chapter_title: Optional[str] = None
+    note: Optional[str] = None
+    updated_at: Optional[str] = None
+
 # --- DB 연결 ---
 def get_db_connection():
     return psycopg2.connect(
@@ -269,6 +281,93 @@ def get_db_connection():
         password=os.environ.get("DB_PASS", "kcc_password"),
         dbname=os.environ.get("DB_NAME", "rabbit_novel")
     )
+
+def _utc_now() -> datetime:
+    return datetime.utcnow()
+
+def _parse_iso_dt(raw: Optional[str]) -> datetime:
+    if not raw:
+        return _utc_now()
+    try:
+        return datetime.fromisoformat(raw.replace("Z", ""))
+    except Exception:
+        return _utc_now()
+
+def upsert_worker_state(cur, data: WorkerState):
+    dt = _parse_iso_dt(data.updated_at)
+    cur.execute(
+        """
+        INSERT INTO worker_states
+            (worker_name, role, status, novel_id, chapter_id, chapter_title, note, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (worker_name)
+        DO UPDATE SET
+            role = EXCLUDED.role,
+            status = EXCLUDED.status,
+            novel_id = EXCLUDED.novel_id,
+            chapter_id = EXCLUDED.chapter_id,
+            chapter_title = EXCLUDED.chapter_title,
+            note = EXCLUDED.note,
+            updated_at = EXCLUDED.updated_at
+        """,
+        (
+            data.worker_name,
+            data.role,
+            data.status,
+            data.novel_id,
+            data.chapter_id,
+            data.chapter_title,
+            data.note,
+            dt,
+        ),
+    )
+
+def fetch_worker_states(cur):
+    cur.execute(
+        """
+        SELECT worker_name, role, status, novel_id, chapter_id, chapter_title, note, updated_at
+        FROM worker_states
+        ORDER BY role ASC, worker_name ASC
+        """
+    )
+    rows = cur.fetchall()
+    items = []
+    now = _utc_now()
+    for r in rows:
+        updated_at = r[7]
+        stale = (now - updated_at) > timedelta(seconds=WORKER_STALE_SEC) if updated_at else True
+        items.append({
+            "worker_name": r[0],
+            "role": r[1],
+            "status": r[2],
+            "novel_id": r[3],
+            "chapter_id": r[4],
+            "chapter_title": r[5],
+            "note": r[6],
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "stale": stale,
+        })
+    return items
+
+def is_worker_system_ok(states) -> bool:
+    if not states:
+        return False
+    for s in states:
+        if s["stale"]:
+            return False
+        if s["status"] in ("ERROR", "DOWN"):
+            return False
+    return True
+
+def get_worker_health_snapshot():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        states = fetch_worker_states(cur)
+        ok = is_worker_system_ok(states)
+        return ok, states
+    finally:
+        conn.close()
 
 # ... [기존 startup_event, health_check 코드는 동일] ...
 @app.on_event("startup")
@@ -321,6 +420,18 @@ def startup_event():
             novel_id INTEGER NOT NULL,
             genre_id INTEGER NOT NULL,
             UNIQUE (novel_id, genre_id)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS worker_states (
+            worker_name TEXT PRIMARY KEY,
+            role TEXT NOT NULL,
+            status TEXT NOT NULL,
+            novel_id INTEGER,
+            chapter_id INTEGER,
+            chapter_title TEXT,
+            note TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
     conn.commit()
@@ -398,12 +509,14 @@ def web_index(request: Request):
     if request.url.query:
         current_url = f"{current_url}?{request.url.query}"
     current_url_q = quote(current_url, safe="")
+    worker_ok, _ = get_worker_health_snapshot()
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
             "novels": novels,
             "theme": get_theme(request),
+            "worker_ok": worker_ok,
             "last_novel_id": last_novel_id,
             "recent_reads": get_recent_reads(request),
             "novel_genres": novel_genres,
@@ -429,6 +542,7 @@ def web_chapters(request: Request, novel_id: int):
     novel_genres = fetch_novel_genres_with_ids(cur, novel_id)
     all_genres = fetch_all_genres_with_ids(cur)
     conn.close()
+    worker_ok, _ = get_worker_health_snapshot()
     response = templates.TemplateResponse(
         "chapters.html",
         {
@@ -436,6 +550,7 @@ def web_chapters(request: Request, novel_id: int):
             "novel_title": novel_title,
             "chapters": chapters,
             "theme": get_theme(request),
+            "worker_ok": worker_ok,
             "novel_id": novel_id,
             "novel_genres": novel_genres,
             "all_genres": all_genres
@@ -542,6 +657,7 @@ def web_read(request: Request, chapter_id: int):
     translated_html = build_paragraph_html(translated_content) if translated_content else None
     mixed_html = build_mixed_html(content, translated_content) if translated_content else None
     
+    worker_ok, _ = get_worker_health_snapshot()
     response = templates.TemplateResponse("read.html", {
         "request": request,
         "title": title,
@@ -553,7 +669,8 @@ def web_read(request: Request, chapter_id: int):
         "novel_id": novel_id,
         "chapter_id": chapter_id,
         "chapter_url": chapter_url,
-        "theme": get_theme(request)
+        "theme": get_theme(request),
+        "worker_ok": worker_ok
     })
 
     response.set_cookie("last_novel_id", str(novel_id), max_age=60 * 60 * 24 * 365, path="/")
@@ -705,11 +822,13 @@ def web_request(request: Request):
     cur = conn.cursor()
     all_genres = fetch_all_genres(cur)
     conn.close()
+    worker_ok, _ = get_worker_health_snapshot()
     return templates.TemplateResponse(
         "request.html",
         {
             "request": request,
             "theme": get_theme(request),
+            "worker_ok": worker_ok,
             "status": None,
             "all_genres": all_genres
         }
@@ -766,9 +885,10 @@ def web_request_submit(
         cur2 = conn2.cursor()
         all_genres = fetch_all_genres(cur2)
         conn2.close()
+    worker_ok, _ = get_worker_health_snapshot()
     return templates.TemplateResponse(
         "request.html",
-        {"request": request, "theme": get_theme(request), "status": status, "all_genres": all_genres}
+        {"request": request, "theme": get_theme(request), "worker_ok": worker_ok, "status": status, "all_genres": all_genres}
     )
 
 @app.post("/client/add")
@@ -892,6 +1012,38 @@ def fail_job(data: JobFail):
         return {"status":"error","msg": str(e)}
     finally:
         conn.close()
+
+@app.post("/worker/state")
+def update_worker_state(data: WorkerState):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        upsert_worker_state(cur, data)
+        conn.commit()
+        return {"status": "success"}
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "msg": str(e)}
+    finally:
+        conn.close()
+
+@app.get("/web/runtime", response_class=HTMLResponse)
+def web_runtime(request: Request):
+    worker_ok, states = get_worker_health_snapshot()
+    return templates.TemplateResponse(
+        "runtime.html",
+        {
+            "request": request,
+            "theme": get_theme(request),
+            "worker_ok": worker_ok,
+            "states": states,
+        },
+    )
+
+@app.get("/web/runtime/data")
+def web_runtime_data():
+    worker_ok, states = get_worker_health_snapshot()
+    return {"worker_ok": worker_ok, "states": states, "updated_at": _utc_now().isoformat()}
 
 @app.get("/common.css", include_in_schema=False)
 def common_css():
