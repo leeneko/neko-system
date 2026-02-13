@@ -44,14 +44,17 @@ IDLE_SLEEP_SEC = int(os.environ.get("IDLE_SLEEP_SEC", "10"))
 ERROR_SLEEP_SEC = int(os.environ.get("ERROR_SLEEP_SEC", "5"))
 OPTIMIZE_EVERY = int(os.environ.get("OPTIMIZE_EVERY", "10"))
 STATE_ENDPOINT = os.environ.get("OCI_STATE_ENDPOINT", "/worker/state")
-STATE_SERVER_URL = os.environ.get("OCI_SERVER_URL", "http://144.24.87.146:8001")
+STATE_SERVER_URL = os.environ.get("OCI_SERVER_URL", "")
 IDLE_LOG_INTERVAL_SEC = int(os.environ.get("TRANSLATOR_IDLE_LOG_INTERVAL_SEC", "60"))
 
 # Thermal throttling
-TARGET_GPU_TEMP_C = int(os.environ.get("TARGET_GPU_TEMP_C", "72"))
+TARGET_GPU_TEMP_C = int(os.environ.get("TARGET_GPU_TEMP_C", "70"))
 TEMP_POLL_INTERVAL_SEC = float(os.environ.get("TEMP_POLL_INTERVAL_SEC", "5"))
 MAX_COOLDOWN_WAIT_SEC = int(os.environ.get("MAX_COOLDOWN_WAIT_SEC", "180"))
-CHUNK_BASE_DELAY_SEC = float(os.environ.get("CHUNK_BASE_DELAY_SEC", "1.5"))
+CHUNK_BASE_DELAY_SEC = float(os.environ.get("CHUNK_BASE_DELAY_SEC", "4"))
+NO_GPU_FALLBACK_DELAY_SEC = float(os.environ.get("NO_GPU_FALLBACK_DELAY_SEC", "6"))
+MIN_OLLAMA_CALL_INTERVAL_SEC = float(os.environ.get("MIN_OLLAMA_CALL_INTERVAL_SEC", "6"))
+POST_CHAPTER_COOLDOWN_SEC = float(os.environ.get("POST_CHAPTER_COOLDOWN_SEC", "20"))
 
 # Log settings
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +68,24 @@ HTTP_SESSION: Optional[requests.Session] = None
 LAST_NOVEL_ID: Optional[int] = None
 LAST_IDLE_LOG_TS = 0.0
 LAST_STATE_TS = {}
+LAST_OLLAMA_CALL_TS = 0.0
+
+
+def resolve_state_server_url() -> str:
+    # Priority: env OCI_SERVER_URL -> worker config.txt -> default
+    if STATE_SERVER_URL:
+        return STATE_SERVER_URL.rstrip("/")
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        config_file = os.path.join(base_dir, "config.txt")
+        if os.path.exists(config_file):
+            with open(config_file, "r", encoding="utf-8") as f:
+                value = f.read().strip()
+                if value.startswith("http"):
+                    return value.rstrip("/")
+    except Exception:
+        pass
+    return "http://144.24.87.146:8001"
 
 
 def setup_logger() -> None:
@@ -107,7 +128,7 @@ def post_state(status: str, chapter_id: Optional[int] = None, novel_id: Optional
             return
         LAST_STATE_TS[dedup_key] = now
         requests.post(
-            STATE_SERVER_URL.rstrip("/") + STATE_ENDPOINT,
+            resolve_state_server_url() + STATE_ENDPOINT,
             json={
                 "worker_name": "translator-ollama",
                 "role": "translator",
@@ -141,8 +162,9 @@ def read_gpu_temp_c() -> Optional[int]:
 def thermal_cooldown_if_needed():
     temp = read_gpu_temp_c()
     if temp is None:
-        if CHUNK_BASE_DELAY_SEC > 0:
-            time.sleep(CHUNK_BASE_DELAY_SEC)
+        # When GPU metric is unavailable, apply conservative delay fallback.
+        if NO_GPU_FALLBACK_DELAY_SEC > 0:
+            time.sleep(NO_GPU_FALLBACK_DELAY_SEC)
         return
     if temp < TARGET_GPU_TEMP_C:
         if CHUNK_BASE_DELAY_SEC > 0:
@@ -158,6 +180,14 @@ def thermal_cooldown_if_needed():
             break
         if t <= TARGET_GPU_TEMP_C - 2:
             break
+
+
+def wait_for_min_request_interval():
+    global LAST_OLLAMA_CALL_TS
+    now = time.time()
+    elapsed = now - LAST_OLLAMA_CALL_TS
+    if elapsed < MIN_OLLAMA_CALL_INTERVAL_SEC:
+        time.sleep(MIN_OLLAMA_CALL_INTERVAL_SEC - elapsed)
 
 
 def get_http_session() -> requests.Session:
@@ -376,6 +406,8 @@ def split_text(text: str, max_length: int) -> List[str]:
 
 
 def call_ollama_with_prompt(prompt: str) -> Optional[str]:
+    global LAST_OLLAMA_CALL_TS
+    wait_for_min_request_interval()
     payload = {
         "model": MODEL_NAME,
         "prompt": prompt,
@@ -390,6 +422,7 @@ def call_ollama_with_prompt(prompt: str) -> Optional[str]:
     for attempt in range(1, OLLAMA_MAX_RETRY + 1):
         try:
             response = session.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT_SEC)
+            LAST_OLLAMA_CALL_TS = time.time()
             response.raise_for_status()
             translated = response.json().get("response", "").strip()
             if translated:
@@ -440,6 +473,8 @@ def translate_text(full_text: str) -> Optional[str]:
             log_error(f"Chunk translation failed at {idx}/{len(chunks)}")
             return None
         translated_chunks.append(translated)
+        # Cool down again after each chunk because chunk generation itself can keep GPU at high temp.
+        thermal_cooldown_if_needed()
 
     return "\n".join(translated_chunks)
 
@@ -528,6 +563,8 @@ def main() -> None:
             elapsed = time.time() - started
             log_info(f"Done chapter id={chapter_id} in {elapsed:.1f}s")
             post_state("IDLE", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="translation_done")
+            if POST_CHAPTER_COOLDOWN_SEC > 0:
+                time.sleep(POST_CHAPTER_COOLDOWN_SEC)
 
             conn = run_periodic_optimization(conn, translated_count)
 

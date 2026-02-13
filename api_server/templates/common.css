@@ -622,6 +622,30 @@ input[type="radio"] {
     color: var(--muted);
 }
 
+.runtime-errors {
+    margin-top: 14px;
+}
+
+.error-item {
+    background: var(--card);
+    border: 1px solid #f0b7b7;
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+}
+
+.error-title {
+    margin: 0 0 6px 0;
+    font-size: 14px;
+}
+
+.error-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
 #toast {
     position: fixed;
     left: 50%;

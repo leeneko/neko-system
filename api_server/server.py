@@ -92,7 +92,10 @@ THEMES = {"paper", "dark", "light"}
 RECENT_COOKIE = "recent_reads"
 RECENT_LIMIT = 20
 MAX_FAIL_RETRY = int(os.environ.get("MAX_FAIL_RETRY", "5"))
-WORKER_STALE_SEC = int(os.environ.get("WORKER_STALE_SEC", "90"))
+WORKER_STALE_SEC = int(os.environ.get("WORKER_STALE_SEC", "120"))
+REQUIRED_WORKER_ROLES = tuple(
+    r.strip() for r in os.environ.get("REQUIRED_WORKER_ROLES", "crawler,translator").split(",") if r.strip()
+)
 
 # 글로벌 띄어쓰기 모델 (처음 사용 시 로드)
 _spacing_model = None
@@ -294,7 +297,8 @@ def _parse_iso_dt(raw: Optional[str]) -> datetime:
         return _utc_now()
 
 def upsert_worker_state(cur, data: WorkerState):
-    dt = _parse_iso_dt(data.updated_at)
+    # Use server-side receive time to avoid client clock drift causing false stale/red status.
+    dt = _utc_now()
     cur.execute(
         """
         INSERT INTO worker_states
@@ -352,6 +356,9 @@ def fetch_worker_states(cur):
 def is_worker_system_ok(states) -> bool:
     if not states:
         return False
+    roles = {s["role"] for s in states}
+    if REQUIRED_WORKER_ROLES and not all(role in roles for role in REQUIRED_WORKER_ROLES):
+        return False
     for s in states:
         if s["stale"]:
             return False
@@ -368,6 +375,35 @@ def get_worker_health_snapshot():
         return ok, states
     finally:
         conn.close()
+
+def fetch_runtime_errors(cur, limit: int = 100):
+    cur.execute(
+        """
+        SELECT
+            c.id, c.novel_id, n.title, c.title, c.status, COALESCE(c.fail_count, 0), COALESCE(c.last_error, ''),
+            CASE WHEN c.content IS NOT NULL AND c.content <> '' THEN TRUE ELSE FALSE END AS has_content
+        FROM chapters c
+        JOIN novels n ON n.id = c.novel_id
+        WHERE c.status = 'FAILED' OR COALESCE(c.last_error, '') <> ''
+        ORDER BY c.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    rows = cur.fetchall()
+    return [
+        {
+            "chapter_id": r[0],
+            "novel_id": r[1],
+            "novel_title": r[2],
+            "chapter_title": r[3],
+            "status": r[4],
+            "fail_count": r[5],
+            "last_error": r[6],
+            "has_content": bool(r[7]),
+        }
+        for r in rows
+    ]
 
 # ... [기존 startup_event, health_check 코드는 동일] ...
 @app.on_event("startup")
@@ -1030,6 +1066,12 @@ def update_worker_state(data: WorkerState):
 @app.get("/web/runtime", response_class=HTMLResponse)
 def web_runtime(request: Request):
     worker_ok, states = get_worker_health_snapshot()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        errors = fetch_runtime_errors(cur)
+    finally:
+        conn.close()
     return templates.TemplateResponse(
         "runtime.html",
         {
@@ -1037,13 +1079,40 @@ def web_runtime(request: Request):
             "theme": get_theme(request),
             "worker_ok": worker_ok,
             "states": states,
+            "errors": errors,
         },
     )
 
 @app.get("/web/runtime/data")
 def web_runtime_data():
     worker_ok, states = get_worker_health_snapshot()
-    return {"worker_ok": worker_ok, "states": states, "updated_at": _utc_now().isoformat()}
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        errors = fetch_runtime_errors(cur)
+    finally:
+        conn.close()
+    return {"worker_ok": worker_ok, "states": states, "errors": errors, "updated_at": _utc_now().isoformat()}
+
+@app.get("/web/runtime/retry/{chapter_id}")
+def web_runtime_retry(chapter_id: int, mode: str = "recrawl"):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COALESCE(content, '') FROM chapters WHERE id = %s", (chapter_id,))
+        row = cur.fetchone()
+        has_content = bool(row and row[0])
+
+        if mode == "retranslate" and has_content:
+            cur.execute("DELETE FROM chapter_translations WHERE chapter_id = %s", (chapter_id,))
+            cur.execute("UPDATE chapters SET status = 'DONE', fail_count = 0, last_error = NULL WHERE id = %s", (chapter_id,))
+        else:
+            cur.execute("DELETE FROM chapter_translations WHERE chapter_id = %s", (chapter_id,))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (chapter_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/web/runtime")
 
 @app.get("/common.css", include_in_schema=False)
 def common_css():

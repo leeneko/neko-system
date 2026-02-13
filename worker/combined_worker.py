@@ -66,8 +66,20 @@ except Exception as e:
     print(f"Warning: Could not set up file logging: {e}")
 
 def log_info(msg): 
-    """정보 로그 출력"""
-    logging.info(msg)
+    """INFO flood 방지: 기본은 핵심 이벤트만 출력, verbose 모드에서 전체 출력."""
+    if WORKER_VERBOSE_INFO:
+        logging.info(msg)
+        return
+    major_tokens = (
+        "TASK COMPLETED",
+        "ROUND-ROBIN PROCESSING",
+        "No novels in rotation",
+        "Worker started",
+        "Worker shutting down",
+        "Keyboard interrupt",
+    )
+    if any(token in str(msg) for token in major_tokens):
+        logging.info(msg)
 
 def log_debug(msg):
     """디버그 로그 출력"""
