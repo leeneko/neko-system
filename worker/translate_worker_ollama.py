@@ -69,6 +69,7 @@ LAST_NOVEL_ID: Optional[int] = None
 LAST_IDLE_LOG_TS = 0.0
 LAST_STATE_TS = {}
 LAST_OLLAMA_CALL_TS = 0.0
+TRANSLATOR_VERBOSE_INFO = os.environ.get("TRANSLATOR_VERBOSE_INFO", "0") == "1"
 
 
 def resolve_state_server_url() -> str:
@@ -113,7 +114,17 @@ def setup_logger() -> None:
 
 
 def log_info(msg: str) -> None:
-    LOGGER.info(msg)
+    if TRANSLATOR_VERBOSE_INFO:
+        LOGGER.info(msg)
+        return
+    major_tokens = (
+        "TRANSLATOR STARTED",
+        "TRANSLATION COMPLETED",
+        "No chapters to translate",
+        "Shutdown requested",
+    )
+    if any(token in str(msg) for token in major_tokens):
+        LOGGER.info(msg)
 
 
 def log_error(msg: str) -> None:
@@ -171,7 +182,7 @@ def thermal_cooldown_if_needed():
             time.sleep(CHUNK_BASE_DELAY_SEC)
         return
     waited = 0.0
-    log_info(f"GPU temp high ({temp}C), cooling...")
+    # cooling loop intentionally silent in minimal log mode
     while waited < MAX_COOLDOWN_WAIT_SEC:
         time.sleep(TEMP_POLL_INTERVAL_SEC)
         waited += TEMP_POLL_INTERVAL_SEC
@@ -460,14 +471,12 @@ def translate_text(full_text: str) -> Optional[str]:
 
     chunks = split_text(full_text, MAX_CHUNK_SIZE)
     translated_chunks: List[str] = []
-    log_info(f"   chunks={len(chunks)}")
 
     for idx, chunk in enumerate(chunks, start=1):
         if not chunk.strip():
             translated_chunks.append("")
             continue
         thermal_cooldown_if_needed()
-        log_info(f"   translating chunk {idx}/{len(chunks)} ({len(chunk)} chars)")
         translated = call_ollama(chunk)
         if not translated:
             log_error(f"Chunk translation failed at {idx}/{len(chunks)}")
@@ -483,7 +492,6 @@ def run_periodic_optimization(conn, success_count: int):
     if OPTIMIZE_EVERY <= 0 or success_count % OPTIMIZE_EVERY != 0:
         return conn
 
-    log_info(f"Optimization run triggered after {success_count} translations")
     gc_count = gc.collect()
     reset_http_session()
 
@@ -498,16 +506,12 @@ def run_periodic_optimization(conn, success_count: int):
         log_error("Reconnection failed during optimization; keep retrying in main loop")
         return None
 
-    log_info(f"Optimization done (gc_collected={gc_count})")
     return new_conn
 
 
 def main() -> None:
     setup_logger()
-    log_info("=" * 62)
-    log_info(f"Rabbit Translation Worker (Ollama): model={MODEL_NAME}")
-    log_info(f"engine={TRANSLATION_ENGINE}, optimize_every={OPTIMIZE_EVERY}")
-    log_info("=" * 62)
+    log_info(f"TRANSLATOR STARTED: model={MODEL_NAME}")
     post_state("IDLE", note="startup")
 
     if not HAS_PSYCOPG2:
@@ -540,7 +544,6 @@ def main() -> None:
             LAST_NOVEL_ID = chapter.get("novel_id")
             title = chapter["title"] or ""
             content = chapter["content"] or ""
-            log_info(f"Start chapter id={chapter_id}, len={len(content)}, title={title}")
             post_state("TRANSLATING", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="translating")
 
             started = time.time()
@@ -561,7 +564,7 @@ def main() -> None:
 
             translated_count += 1
             elapsed = time.time() - started
-            log_info(f"Done chapter id={chapter_id} in {elapsed:.1f}s")
+            log_info(f"✅ TRANSLATION COMPLETED: chapter_id={chapter_id}, sec={elapsed:.1f}")
             post_state("IDLE", chapter_id=chapter_id, novel_id=LAST_NOVEL_ID, chapter_title=title, note="translation_done")
             if POST_CHAPTER_COOLDOWN_SEC > 0:
                 time.sleep(POST_CHAPTER_COOLDOWN_SEC)

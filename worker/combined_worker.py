@@ -71,8 +71,7 @@ def log_info(msg):
         logging.info(msg)
         return
     major_tokens = (
-        "TASK COMPLETED",
-        "ROUND-ROBIN PROCESSING",
+        "CRAWL COMPLETED",
         "No novels in rotation",
         "Worker started",
         "Worker shutting down",
@@ -1066,17 +1065,8 @@ def process_task(task: dict, server_url: str):
             "next_url": normalized_next
         }
         
-        # Log completion status with clear formatting
-        log_info(f"\n" + "="*70)
-        log_info_task_once("task_completed", task_id, f"✅ TASK COMPLETED: {task_id}")
-        log_info(f"   Title: {cleaned_title}")
-        log_info(f"   Original text: {len(original_text)} chars")
-        log_info(f"   (번역은 translate_worker_ollama.py에서 별도로 처리됨)")
-        if normalized_next:
-            log_info(f"   Next chapter: {normalized_next}")
-        else:
-            log_info(f"   Status: 🏁 LAST CHAPTER (no next URL)")
-        log_info(f"="*70 + "\n")
+        # Minimal completion log: one line per chapter.
+        log_info_task_once("crawl_completed", task_id, f"✅ CRAWL COMPLETED: Task {task_id}")
         
         # Send result to server and log response for debugging
         try:
@@ -1203,7 +1193,6 @@ def main():
                     rot_idx = (rot_idx + 1) % len(rotation)
 
                 task_id = task.get("id", "")
-                log_info_task_once("round_robin", task_id, f"🔄 ROUND-ROBIN PROCESSING: Task {task_id} (Novel: {current_novel})")
                 process_task(task, server_url)
 
                 # Small random delay between tasks to avoid macro detection
