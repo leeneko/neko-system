@@ -46,6 +46,7 @@ from pydantic import BaseModel
 import psycopg2
 import os
 import json
+from html import escape
 from urllib.parse import quote, unquote
 from typing import Optional, List
 import logging
@@ -89,6 +90,7 @@ THEMES = {"paper", "dark", "light"}
 # 최근 읽은 책 쿠키 설정
 RECENT_COOKIE = "recent_reads"
 RECENT_LIMIT = 20
+MAX_FAIL_RETRY = int(os.environ.get("MAX_FAIL_RETRY", "5"))
 
 # 글로벌 띄어쓰기 모델 (처음 사용 시 로드)
 _spacing_model = None
@@ -201,6 +203,43 @@ def set_recent_reads(response: HTMLResponse, items):
     payload = quote(json.dumps(trimmed, ensure_ascii=False))
     response.set_cookie(RECENT_COOKIE, payload, max_age=60 * 60 * 24 * 365, path="/")
 
+def sanitize_chapter_title(raw_title: Optional[str], novel_title: Optional[str] = None) -> str:
+    title = (raw_title or "").strip()
+    if not title:
+        return "제목 없음"
+
+    # Remove common site suffixes/prefixes and normalize separators.
+    title = title.replace("::", ":")
+    noise_tokens = ["북토끼", "booktoki", "syosetu", "소설가가되자", "narou"]
+    parts = [p.strip() for p in title.replace("|", " - ").split(" - ") if p.strip()]
+    filtered = []
+    for part in parts:
+        low = part.lower()
+        if any(tok in low for tok in noise_tokens):
+            continue
+        filtered.append(part)
+    if filtered:
+        title = " - ".join(filtered)
+
+    # If novel title is repeated inside chapter title, collapse it.
+    if novel_title:
+        n = novel_title.strip()
+        if n and n in title:
+            title = title.replace(n, "").strip(" -:[]()")
+            if not title:
+                title = n
+
+    # Collapse repeated adjacent phrases: "A - A - B" -> "A - B"
+    dedup = []
+    for part in [p.strip() for p in title.split(" - ") if p.strip()]:
+        if not dedup or dedup[-1] != part:
+            dedup.append(part)
+    title = " - ".join(dedup) if dedup else (raw_title or "").strip()
+
+    if len(title) > 180:
+        title = title[:180].rstrip()
+    return title or "제목 없음"
+
 # --- 데이터 모델 ---
 class NovelReq(BaseModel):
     title: str
@@ -253,9 +292,14 @@ def startup_event():
             content TEXT,
             status TEXT DEFAULT 'PENDING',
             next_url TEXT,
+            fail_count INTEGER DEFAULT 0,
+            last_error TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+    # Online-safe migrations for existing DBs
+    cur.execute("ALTER TABLE chapters ADD COLUMN IF NOT EXISTS fail_count INTEGER DEFAULT 0")
+    cur.execute("ALTER TABLE chapters ADD COLUMN IF NOT EXISTS last_error TEXT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS chapter_translations (
             id SERIAL PRIMARY KEY,
@@ -303,7 +347,7 @@ def update_all_novels():
         count = 0
         for row in rows:
             # 상태를 PENDING으로 변경 -> 워커가 다시 방문 -> 다음화 있으면 자동 등록됨
-            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (row[0],))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (row[0],))
             count += 1
             
         conn.commit()
@@ -450,26 +494,52 @@ def web_read(request: Request, chapter_id: int):
         # 쿠키나 파라미터가 없으면, 번역본이 있으면 'combined', 없으면 'original'
         view_mode = "combined" if translated_content else "original"
     
+    def split_paragraphs(text: Optional[str]) -> List[str]:
+        if not text:
+            return []
+        paras = []
+        chunk = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                if chunk:
+                    paras.append(" ".join(chunk).strip())
+                    chunk = []
+                continue
+            chunk.append(line)
+        if chunk:
+            paras.append(" ".join(chunk).strip())
+        return [p for p in paras if p]
+
     def build_mixed_html(original_text: str, translated_text: str) -> str:
-        orig_lines = original_text.splitlines()
-        trans_lines = translated_text.splitlines()
-        max_len = max(len(orig_lines), len(trans_lines))
+        orig_lines = split_paragraphs(original_text)
+        trans_lines = split_paragraphs(translated_text)
+        max_len = max(len(orig_lines), len(trans_lines), 1)
         parts = []
         for i in range(max_len):
             o = orig_lines[i] if i < len(orig_lines) else ""
             t = trans_lines[i] if i < len(trans_lines) else ""
             if not o.strip():
-                o = "&nbsp;"
+                o = "\u00a0"
             if not t.strip():
-                t = "&nbsp;"
+                t = "\u00a0"
             parts.append(
-                f'<div class="line-pair"><div class="line original">{o}</div>'
-                f'<div class="line translated">{t}</div></div>'
+                f'<div class="paragraph-pair"><div class="line original">{escape(o)}</div>'
+                f'<div class="line translated">{escape(t)}</div></div>'
             )
         return "\n".join(parts)
 
-    content_html = content.replace("\n", "<br>")
-    translated_html = translated_content.replace("\n", "<br>") if translated_content else None
+    def build_paragraph_html(text: str) -> str:
+        parts = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts.append(f"<p>{escape(line)}</p>")
+        return "".join(parts) if parts else "<p></p>"
+
+    content_html = build_paragraph_html(content)
+    translated_html = build_paragraph_html(translated_content) if translated_content else None
     mixed_html = build_mixed_html(content, translated_content) if translated_content else None
     
     response = templates.TemplateResponse("read.html", {
@@ -506,10 +576,8 @@ def retranslate_chapter(request: Request, chapter_id: int):
     try:
         # 1. 기존 번역 삭제
         cur.execute("DELETE FROM chapter_translations WHERE chapter_id = %s", (chapter_id,))
-        # 2. 챕터 상태를 번역 대기(또는 처리 대기)로 변경 
-        # (주의: 워커 로직에 따라 'PENDING'으로 할지 별도 상태로 할지 결정 필요. 
-        #  여기서는 워커가 번역되지 않은 PENDING 항목을 가져간다고 가정)
-        cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (chapter_id,))
+        # 재번역은 크롤 재요청이 아니라 번역 워커가 가져가도록 기존 본문 상태 유지
+        cur.execute("UPDATE chapters SET status = 'DONE', fail_count = 0, last_error = NULL WHERE id = %s", (chapter_id,))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -533,7 +601,7 @@ def web_refresh_novel(request: Request, novel_id: int):
         """, (novel_id,))
         last_row = cur.fetchone()
         if last_row:
-            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (last_row[0],))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (last_row[0],))
             conn.commit()
     finally:
         conn.close()
@@ -551,7 +619,8 @@ def recrawl_chapter(request: Request, chapter_id: int):
         cur.execute("SELECT novel_id FROM chapters WHERE id = %s", (chapter_id,))
         row = cur.fetchone()
         if row:
-            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (chapter_id,))
+            cur.execute("DELETE FROM chapter_translations WHERE chapter_id = %s", (chapter_id,))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (chapter_id,))
             conn.commit()
     finally:
         conn.close()
@@ -572,7 +641,7 @@ def web_refresh_all(request: Request):
         """)
         rows = cur.fetchall()
         for row in rows:
-            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (row[0],))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (row[0],))
         conn.commit()
     finally:
         conn.close()
@@ -684,7 +753,7 @@ def web_request_submit(
         """, (novel_id,))
         last_row = cur.fetchone()
         if last_row:
-            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (last_row[0],))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (last_row[0],))
         conn.commit()
         all_genres = fetch_all_genres(cur)
     except Exception as e:
@@ -719,7 +788,7 @@ def add_novel(data: NovelReq):
         """, (novel_id,))
         last_row = cur.fetchone()
         if last_row:
-            cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (last_row[0],))
+            cur.execute("UPDATE chapters SET status = 'PENDING', fail_count = 0, last_error = NULL WHERE id = %s", (last_row[0],))
         conn.commit()
         return {"status": "success"}
     except Exception as e:
@@ -771,10 +840,17 @@ def submit_job(data: JobResult):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # 번역된 제목이 있으면 그것으로, 없으면 원본 제목으로 업데이트
-    final_title = data.translated_title if data.translated_title else data.title
+    cur.execute("SELECT n.title FROM chapters c JOIN novels n ON c.novel_id = n.id WHERE c.id = %s", (data.chapter_id,))
+    novel_row = cur.fetchone()
+    novel_title = novel_row[0] if novel_row else None
 
-    cur.execute("UPDATE chapters SET title = %s, content = %s, next_url = %s, status = 'DONE' WHERE id = %s", (final_title, data.content, data.next_url, data.chapter_id))
+    raw_title = data.translated_title if data.translated_title else data.title
+    final_title = sanitize_chapter_title(raw_title, novel_title=novel_title)
+
+    cur.execute(
+        "UPDATE chapters SET title = %s, content = %s, next_url = %s, status = 'DONE', fail_count = 0, last_error = NULL WHERE id = %s",
+        (final_title, data.content, data.next_url, data.chapter_id),
+    )
 
     cur.execute("SELECT novel_id FROM chapters WHERE id = %s", (data.chapter_id,))
 
@@ -801,9 +877,16 @@ def fail_job(data: JobFail):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE chapters SET status = 'PENDING' WHERE id = %s", (data.chapter_id,))
+        cur.execute("SELECT COALESCE(fail_count, 0) FROM chapters WHERE id = %s", (data.chapter_id,))
+        row = cur.fetchone()
+        fail_count = (row[0] if row else 0) + 1
+        next_status = "FAILED" if fail_count >= MAX_FAIL_RETRY else "PENDING"
+        cur.execute(
+            "UPDATE chapters SET status = %s, fail_count = %s, last_error = %s WHERE id = %s",
+            (next_status, fail_count, (data.reason or "")[:400], data.chapter_id),
+        )
         conn.commit()
-        return {"status": "success"}
+        return {"status": "success", "fail_count": fail_count, "next_status": next_status}
     except Exception as e:
         conn.rollback()
         return {"status":"error","msg": str(e)}

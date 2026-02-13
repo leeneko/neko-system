@@ -17,7 +17,7 @@
   4. 다음 챕터 링크 추출 (extract_next_url)
   5. 파일 저장 및 결과 전송 (post_result)
   6. 라운드-로빈으로 다음 소설 작업 처리
-  ※ 번역은 translate_worker.py에서 별도로 처리
+  ※ 번역은 translate_worker_ollama.py에서 별도로 처리
 
 환경변수:
   - OCI_SERVER_URL: OCI 서버 주소 (예: http://144.24.87.146:8001)
@@ -65,8 +65,8 @@ except Exception as e:
     print(f"Warning: Could not set up file logging: {e}")
 
 def log_info(msg): 
-    """정보 로그 출력 (INFO는 출력하지 않음)"""
-    pass
+    """정보 로그 출력"""
+    logging.info(msg)
 
 def log_debug(msg):
     """디버그 로그 출력"""
@@ -109,8 +109,8 @@ PROXY_LIST = []
 if os.environ.get("PROXY_LIST"):
     PROXY_LIST = [p.strip() for p in os.environ.get("PROXY_LIST", "").split(";") if p.strip()]
 
-# 번역 설정 (translate_worker.py에서 별도로 처리)
-ENABLE_TRANSLATION = False  # 번역은 별도 translate_worker.py에서 처리
+# 번역 설정 (translate_worker_ollama.py에서 별도로 처리)
+ENABLE_TRANSLATION = False  # 번역은 별도 translate_worker_ollama.py에서 처리
 
 # DrissionPage (브라우저) 설정
 DRISSION_PORT = int(os.environ.get("DRISSION_PORT", "9222"))
@@ -794,6 +794,22 @@ def save_text_file(dirpath, title, suffix, content):
         log_exception("save_text_file failed")
         return None
 
+def sanitize_chapter_title(raw_title: str) -> str:
+    title = (raw_title or "").strip()
+    if not title:
+        return "제목 없음"
+    title = title.replace("::", ":")
+    parts = [p.strip() for p in title.replace("|", " - ").split(" - ") if p.strip()]
+    noise_tokens = ("booktoki", "북토끼", "syosetu", "소설가가되자")
+    filtered = []
+    for part in parts:
+        if any(tok in part.lower() for tok in noise_tokens):
+            continue
+        if not filtered or filtered[-1] != part:
+            filtered.append(part)
+    cleaned = " - ".join(filtered) if filtered else title
+    return cleaned[:180].strip()
+
 # directories
 ORIGINAL_DIR = os.path.join(_base_dir, "download", "original")
 
@@ -927,14 +943,15 @@ def process_task(task: dict, server_url: str):
         else:
             log_info(f"✓ Next chapter URL (normalized): {normalized_next}")
 
-        # 번역은 translate_worker.py에서 별도로 처리
+        # 번역은 translate_worker_ollama.py에서 별도로 처리
         # combined_worker는 원본 텍스트만 추출하여 저장
 
+        cleaned_title = sanitize_chapter_title(title)
         result = {
             "id": task_id,
             "chapter_id": task_id,
             "url": url,
-            "title": title,
+            "title": cleaned_title,
             "content": original_text,
             # Send only normalized absolute next_url to server to avoid ambiguity
             "next_url": normalized_next
@@ -943,9 +960,9 @@ def process_task(task: dict, server_url: str):
         # Log completion status with clear formatting
         log_info(f"\n" + "="*70)
         log_info(f"✅ TASK COMPLETED: {task_id}")
-        log_info(f"   Title: {title}")
+        log_info(f"   Title: {cleaned_title}")
         log_info(f"   Original text: {len(original_text)} chars")
-        log_info(f"   (번역은 translate_worker.py에서 별도로 처리됨)")
+        log_info(f"   (번역은 translate_worker_ollama.py에서 별도로 처리됨)")
         if normalized_next:
             log_info(f"   Next chapter: {normalized_next}")
         else:

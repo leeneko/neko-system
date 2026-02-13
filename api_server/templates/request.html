@@ -13,9 +13,9 @@
             <div class="actions">
                 <a class="btn" href="/web">책장</a>
                 <div class="theme">
-                    <a class="btn" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
-                    <a class="btn" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
-                    <a class="btn" href="/web/theme/light?next={{ request.url.path }}">Light</a>
+                    <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
+                    <a class="btn theme-btn {% if theme == 'dark' %}active{% endif %}" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
+                    <a class="btn theme-btn {% if theme == 'light' %}active{% endif %}" href="/web/theme/light?next={{ request.url.path }}">Light</a>
                 </div>
             </div>
         </header>

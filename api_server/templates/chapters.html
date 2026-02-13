@@ -16,9 +16,9 @@
             <div class="actions">
                 <a class="btn" href="/web">책장</a>
                 <div class="theme">
-                    <a class="btn" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
-                    <a class="btn" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
-                    <a class="btn" href="/web/theme/light?next={{ request.url.path }}">Light</a>
+                    <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
+                    <a class="btn theme-btn {% if theme == 'dark' %}active{% endif %}" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
+                    <a class="btn theme-btn {% if theme == 'light' %}active{% endif %}" href="/web/theme/light?next={{ request.url.path }}">Light</a>
                 </div>
             </div>
         </header>
@@ -52,49 +52,49 @@
             </form>
         </section>
 
-        <div class="controls" style="margin-bottom:12px;">
-            <div class="sort-controls" style="display:flex;gap:8px;align-items:center;">
+        <div class="chapter-controls">
+            <div class="sort-controls">
                 <button id="sort-asc" class="btn">오름차순</button>
                 <button id="sort-desc" class="btn">내림차순</button>
-                <span style="color:#666;margin-left:8px;font-size:13px;">(정렬은 로컬에 저장됩니다)</span>
+                <span class="sort-hint">(정렬은 로컬에 저장됩니다)</span>
             </div>
         </div>
 
         <!-- Pagination controls (top) -->
-        <div class="pagination-controls" style="display:flex;justify-content:space-between;align-items:center;margin:8px 0;">
-            <div>
+        <div class="pagination-controls">
+            <div class="pagination-actions">
                 <button id="prev-top" class="btn">« 이전</button>
                 <button id="next-top" class="btn">다음 »</button>
             </div>
-            <div style="display:flex;gap:8px;align-items:center;">
-                <label style="font-size:13px;color:var(--muted);">페이지 크기</label>
+            <div class="pagination-meta">
+                <label class="page-label">페이지 크기</label>
                 <select id="page-size-select">
                     <option value="25">25</option>
                     <option value="50">50</option>
                     <option value="100" selected>100</option>
                 </select>
-                <span id="page-info" style="font-size:13px;color:var(--muted);margin-left:8px;"></span>
+                <span id="page-info" class="page-info"></span>
             </div>
         </div>
 
         <ul id="chapters-list">
             {% for c in chapters %}
-                <li data-id="{{ c.id }}" data-title="{{ c.title }}" style="margin:6px 0;list-style:none;">
-                <a href="/web/read/{{ c.id }}" style="text-decoration:none;color:inherit;">{{ c.title or '로딩중...' }}</a>
-                <span class="status" style="margin-left:8px;color:#888;font-size:13px;">{{ c.status }}</span>
+                <li class="chapter-item" data-id="{{ c.id }}" data-title="{{ c.title }}">
+                <a class="chapter-link" href="/web/read/{{ c.id }}">{{ c.title or '로딩중...' }}</a>
+                <span class="chapter-status">{{ c.status }}</span>
                 </li>
             {% endfor %}
         </ul>
 
         <!-- Pagination controls (bottom) -->
-        <div class="pagination-controls" style="display:flex;justify-content:space-between;align-items:center;margin:8px 0;">
-            <div>
+        <div class="pagination-controls">
+            <div class="pagination-actions">
                 <button id="prev-bottom" class="btn">« 이전</button>
                 <button id="next-bottom" class="btn">다음 »</button>
             </div>
-            <div style="display:flex;gap:8px;align-items:center;">
-                <label style="font-size:13px;color:var(--muted);">페이지</label>
-                <span id="page-info-bottom" style="font-size:13px;color:var(--muted);margin-left:8px;"></span>
+            <div class="pagination-meta">
+                <label class="page-label">페이지</label>
+                <span id="page-info-bottom" class="page-info"></span>
             </div>
         </div>
 

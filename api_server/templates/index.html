@@ -16,9 +16,9 @@
                 <a class="btn primary" href="/web/request">소설 요청</a>
                 <a class="btn primary" href="/web/refresh_all?next={{ current_url_q }}">전체 마지막화 확인</a>
                 <div class="theme">
-                    <a class="btn" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
-                    <a class="btn" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
-                    <a class="btn" href="/web/theme/light?next={{ request.url.path }}">Light</a>
+                    <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next={{ request.url.path }}">Paper</a>
+                    <a class="btn theme-btn {% if theme == 'dark' %}active{% endif %}" href="/web/theme/dark?next={{ request.url.path }}">Dark</a>
+                    <a class="btn theme-btn {% if theme == 'light' %}active{% endif %}" href="/web/theme/light?next={{ request.url.path }}">Light</a>
                 </div>
             </div>
         </header>
@@ -54,16 +54,18 @@
         <section class="shelf">
             {% for novel in novels %}
             <div class="card">
-                <button class="btn refresh-btn" onclick="event.stopPropagation(); location.href='/web/novel/{{ novel.id }}/refresh?next={{ current_url_q }}';">
-                    마지막화 확인
-                </button>
                 <div class="card-main" onclick="location.href='/web/novel/{{ novel.id }}'">
-                    <h3 class="title">
-                        {{ novel.title }}
-                        {% if last_novel_id and novel.id == last_novel_id|int %}
-                            <span class="badge">최근 읽음</span>
-                        {% endif %}
-                    </h3>
+                    <div class="card-head">
+                        <h3 class="title">
+                            {{ novel.title }}
+                            {% if last_novel_id and novel.id == last_novel_id|int %}
+                                <span class="badge">최근 읽음</span>
+                            {% endif %}
+                        </h3>
+                        <button class="btn refresh-btn" onclick="event.stopPropagation(); location.href='/web/novel/{{ novel.id }}/refresh?next={{ current_url_q }}';">
+                            마지막화 확인
+                        </button>
+                    </div>
                     {% if novel_genres.get(novel.id) %}
                         <div class="card-tags">
                             {% for g in novel_genres.get(novel.id) %}

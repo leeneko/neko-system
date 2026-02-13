@@ -16,9 +16,9 @@
       </div>
       <div class="actions">
         <div class="theme">
-          <a class="btn" href="/web/theme/paper?next=/web/read/{{ chapter_id }}">Paper</a>
-          <a class="btn" href="/web/theme/dark?next=/web/read/{{ chapter_id }}">Dark</a>
-          <a class="btn" href="/web/theme/light?next=/web/read/{{ chapter_id }}">Light</a>
+          <a class="btn theme-btn {% if theme == 'paper' %}active{% endif %}" href="/web/theme/paper?next=/web/read/{{ chapter_id }}">Paper</a>
+          <a class="btn theme-btn {% if theme == 'dark' %}active{% endif %}" href="/web/theme/dark?next=/web/read/{{ chapter_id }}">Dark</a>
+          <a class="btn theme-btn {% if theme == 'light' %}active{% endif %}" href="/web/theme/light?next=/web/read/{{ chapter_id }}">Light</a>
         </div>
       </div>
     </header>
@@ -189,7 +189,7 @@
 
       // Apply saved preference
       try{
-        const saved = localStorage.getItem('reader_view_mode') || 'combined';
+        let saved = localStorage.getItem('reader_view_mode') || 'combined';
         if(!hasTranslation) saved = 'original';
         applyMode(saved);
       }catch(e){ applyMode('combined'); }

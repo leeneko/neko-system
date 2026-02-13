@@ -1,29 +1,27 @@
-# Auto Start (Windows Task Scheduler)
+# Auto Start (Desktop, Python)
 
-## Build
-1. Open CMD in the `worker` folder.
-2. Run `build.bat`.
-3. Use the generated `dist\RabbitWorker.exe`.
+## Manual Run
+1. Open terminal in `worker` folder.
+2. Run:
+   - `python run_desktop_workers.py`
 
-## Auto Start (Recommended: Task Scheduler)
-1. Press `Win + R`, type `taskschd.msc`, press Enter.
-2. Click `Create Task...`.
-3. **General** tab:
-   - Name: `RabbitWorker`
-   - Check `Run whether user is logged on or not`
-   - Check `Run with highest privileges`
-4. **Triggers** tab:
-   - Click `New...`
-   - Begin the task: `At startup`
-   - OK
-5. **Actions** tab:
-   - Click `New...`
-   - Action: `Start a program`
-   - Program/script: path to `RabbitWorker.exe`
-   - Start in: folder that contains `RabbitWorker.exe`
-6. **Conditions** tab:
-   - Optional: uncheck `Start the task only if the computer is on AC power`
-7. Click **OK** and enter your Windows credentials if prompted.
+This starts both:
+- `combined_worker.py` (crawler)
+- `translate_worker_ollama.py` (Ollama translator)
 
-## Error Log
-Errors are written to `worker_error.log` in the same folder as the EXE.
+## Optional Env (Translator)
+- `OPTIMIZE_EVERY=10` (or `5`)
+- `ERROR_LOG_MAX_MB=20`
+- `ERROR_LOG_BACKUP_COUNT=5`
+- `OLLAMA_MODEL=gemma3:12b`
+
+## Windows Task Scheduler
+1. Open `taskschd.msc`.
+2. Create Task.
+3. Action:
+   - Program: `python`
+   - Arguments: `run_desktop_workers.py`
+   - Start in: your `worker` folder
+
+## Logs
+- Translator error log: `translate_error.log` (error-only, rotating file)

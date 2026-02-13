@@ -66,6 +66,7 @@ h1 {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .btn {
@@ -81,6 +82,19 @@ h1 {
 .theme {
     display: flex;
     gap: 6px;
+    flex-wrap: wrap;
+}
+
+.theme-btn {
+    min-width: 66px;
+    text-align: center;
+}
+
+.theme-btn.active {
+    border-color: var(--accent);
+    background: var(--bg-accent);
+    color: var(--accent);
+    font-weight: 700;
 }
 
 .panel {
@@ -285,6 +299,13 @@ input[type="radio"] {
     cursor: pointer;
 }
 
+.card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
 .title {
     margin: 0 0 6px 0;
     font-size: 16px;
@@ -316,12 +337,15 @@ input[type="radio"] {
 
 .refresh-btn {
     align-self: flex-start;
+    flex-shrink: 0;
+    white-space: nowrap;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--muted);
-    padding: 6px 10px;
-    border-radius: 10px;
-    font-size: 12px;
+    padding: 4px 7px;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 1.2;
     cursor: pointer;
     appearance: none;
     font-family: inherit;
@@ -413,6 +437,11 @@ input[type="radio"] {
     margin: 0 0 12px 0;
 }
 
+.translation-section .content-area p,
+#translated p {
+    margin: 0 0 2em 0;
+}
+
 .translation-section {
     margin-top: 16px;
 }
@@ -424,7 +453,18 @@ input[type="radio"] {
     border-bottom: 1px dashed var(--border);
 }
 
+.mixed-content .paragraph-pair {
+    display: grid;
+    gap: 8px;
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--border);
+}
+
 .mixed-content .line-pair:last-child {
+    border-bottom: none;
+}
+
+.mixed-content .paragraph-pair:last-child {
     border-bottom: none;
 }
 
@@ -441,6 +481,70 @@ input[type="radio"] {
     gap: 8px;
     justify-content: flex-end;
     margin-top: 16px;
+}
+
+.chapter-controls {
+    margin-bottom: 12px;
+}
+
+.sort-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.sort-hint {
+    color: var(--muted);
+    margin-left: 8px;
+    font-size: 13px;
+}
+
+.pagination-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 8px 0;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.pagination-actions,
+.pagination-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.page-label,
+.page-info {
+    font-size: 13px;
+    color: var(--muted);
+}
+
+#chapters-list {
+    padding: 0;
+    margin: 0;
+}
+
+.chapter-item {
+    margin: 6px 0;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.chapter-link {
+    text-decoration: none;
+    color: inherit;
+}
+
+.chapter-status {
+    color: var(--muted);
+    font-size: 13px;
 }
 
 #toast {
@@ -460,4 +564,88 @@ input[type="radio"] {
 
 #toast.show {
     opacity: 0.95;
+}
+
+@media (max-width: 840px) {
+    .wrap {
+        max-width: 100%;
+    }
+
+    header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .actions {
+        justify-content: flex-start;
+    }
+
+    .theme {
+        width: 100%;
+    }
+
+    .theme-btn {
+        min-width: 0;
+        flex: 1;
+    }
+
+    .nav-buttons {
+        justify-content: space-between;
+    }
+}
+
+@media (max-width: 640px) {
+    body {
+        padding: 14px 12px 28px;
+    }
+
+    .panel,
+    .content-area,
+    .genre-box,
+    .history,
+    .card {
+        padding: 12px;
+    }
+
+    .btn {
+        padding: 8px 9px;
+        font-size: 12px;
+    }
+
+    .reader-toolbar {
+        gap: 8px;
+    }
+
+    .toolbar-group {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .pagination-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .pagination-actions,
+    .pagination-meta {
+        justify-content: space-between;
+    }
+
+    #chapters-list {
+        margin-top: 10px;
+    }
+
+    .history-item {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .card-head {
+        align-items: center;
+    }
+
+    #toast {
+        width: calc(100% - 24px);
+        text-align: center;
+    }
 }
