@@ -97,6 +97,7 @@ _LAST_LOG_TS = {}
 _LAST_STATE_TS = {}
 _LOG_ONCE_KEYS = deque(maxlen=5000)
 _LOG_ONCE_SET = set()
+_LAST_GET_TASK_ERROR = None
 def log_info_throttled(key: str, msg: str, interval_sec: int = 60):
     now = time.time()
     prev = _LAST_LOG_TS.get(key, 0)
@@ -215,14 +216,17 @@ def _build_url(server_url: str, endpoint: str) -> str:
     return server_url + endpoint
 
 def get_next_task(server_url: str) -> Optional[dict]:
+    global _LAST_GET_TASK_ERROR
     try:
         url = _build_url(server_url, GET_ENDPOINT)
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
-            log_error(f"get_next_task HTTP {r.status_code}")
+            _LAST_GET_TASK_ERROR = f"http_{r.status_code}"
+            log_info_throttled("get_next_task_http", f"get_next_task HTTP {r.status_code}", 30)
             return None
         j = r.json()
         if not j:
+            _LAST_GET_TASK_ERROR = None
             return None
 
         # Support responses like {"exists": True, "data": {...}} or direct payload
@@ -241,11 +245,17 @@ def get_next_task(server_url: str) -> Optional[dict]:
         novel_id = payload.get("novel_id") or payload.get("novelId") or payload.get("novel")
 
         if chapter_id and url:
+            _LAST_GET_TASK_ERROR = None
             return {"id": chapter_id, "url": url, "novel_id": novel_id}
 
         return None
+    except requests.exceptions.RequestException as e:
+        _LAST_GET_TASK_ERROR = "network"
+        log_info_throttled("get_next_task_network", f"get_next_task network issue: {e.__class__.__name__}", 30)
+        return None
     except Exception:
-        log_exception("get_next_task failed")
+        _LAST_GET_TASK_ERROR = "unknown"
+        log_info_throttled("get_next_task_unknown", "get_next_task failed (non-network)", 30)
         return None
 
 def post_result(server_url: str, payload: dict):
@@ -1113,6 +1123,7 @@ def process_task(task: dict, server_url: str):
         })
 
 def main():
+    global _LAST_GET_TASK_ERROR
     server_url = load_server_url()
     init_drission_connection()
     log_info("Worker started")
@@ -1152,8 +1163,16 @@ def main():
 
                 # If no buffered tasks, wait briefly and retry
                 if not rotation:
-                    log_info_throttled("no_rotation", "⏸️  No novels in rotation, waiting for new tasks...", WORKER_IDLE_LOG_INTERVAL)
-                    post_state(server_url, {"status": "IDLE", "note": "no_queue"})
+                    if _LAST_GET_TASK_ERROR:
+                        log_info_throttled(
+                            "no_rotation_network",
+                            f"⏸️  Waiting for task source (server issue: {_LAST_GET_TASK_ERROR})",
+                            WORKER_IDLE_LOG_INTERVAL,
+                        )
+                        post_state(server_url, {"status": "ERROR", "note": f"task_source_{_LAST_GET_TASK_ERROR}"})
+                    else:
+                        log_info_throttled("no_rotation", "⏸️  No novels in rotation, waiting for new tasks...", WORKER_IDLE_LOG_INTERVAL)
+                        post_state(server_url, {"status": "IDLE", "note": "no_queue"})
                     time.sleep(2)
                     continue
 
