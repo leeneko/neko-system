@@ -95,12 +95,25 @@ def log_exception(msg):
 
 _LAST_LOG_TS = {}
 _LAST_STATE_TS = {}
+_LOG_ONCE_KEYS = deque(maxlen=5000)
+_LOG_ONCE_SET = set()
 def log_info_throttled(key: str, msg: str, interval_sec: int = 60):
     now = time.time()
     prev = _LAST_LOG_TS.get(key, 0)
     if now - prev >= interval_sec:
         _LAST_LOG_TS[key] = now
         log_info(msg)
+
+def log_info_task_once(prefix: str, task_id, msg: str):
+    key = f"{prefix}:{task_id}"
+    if key in _LOG_ONCE_SET:
+        return
+    if len(_LOG_ONCE_KEYS) >= _LOG_ONCE_KEYS.maxlen:
+        old = _LOG_ONCE_KEYS.popleft()
+        _LOG_ONCE_SET.discard(old)
+    _LOG_ONCE_KEYS.append(key)
+    _LOG_ONCE_SET.add(key)
+    log_info(msg)
 
 # ============================================================================
 # DrissionPage 선택적 설치 (브라우저 자동화 - Cloudflare 우회용)
@@ -1045,7 +1058,7 @@ def process_task(task: dict, server_url: str):
         
         # Log completion status with clear formatting
         log_info(f"\n" + "="*70)
-        log_info(f"✅ TASK COMPLETED: {task_id}")
+        log_info_task_once("task_completed", task_id, f"✅ TASK COMPLETED: {task_id}")
         log_info(f"   Title: {cleaned_title}")
         log_info(f"   Original text: {len(original_text)} chars")
         log_info(f"   (번역은 translate_worker_ollama.py에서 별도로 처리됨)")
@@ -1171,7 +1184,7 @@ def main():
                     rot_idx = (rot_idx + 1) % len(rotation)
 
                 task_id = task.get("id", "")
-                log_info(f"🔄 ROUND-ROBIN PROCESSING: Task {task_id} (Novel: {current_novel})")
+                log_info_task_once("round_robin", task_id, f"🔄 ROUND-ROBIN PROCESSING: Task {task_id} (Novel: {current_novel})")
                 process_task(task, server_url)
 
                 # Small random delay between tasks to avoid macro detection
