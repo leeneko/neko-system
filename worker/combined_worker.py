@@ -72,7 +72,8 @@ def log_info(msg):
         logging.info(msg)
         return
     major_tokens = (
-        "CRAWL COMPLETED",
+        "NOVEL COMPLETED",
+        "CAPTCHA DETECTED",
         "No novels in rotation",
         "Worker started",
         "Worker shutting down",
@@ -984,6 +985,7 @@ def process_task(task: dict, server_url: str):
         # If extraction returned None, it's a Cloudflare challenge page
         if original_text is None:
             log_error(f"Cloudflare challenge detected for {url}, will retry")
+            log_info(f"🧩 CAPTCHA DETECTED: chapter_id={task_id} url={url}")
             post_fail(server_url, {"chapter_id": task_id, "url": url, "reason": "cloudflare_challenge"})
             post_state(server_url, {
                 "status": "ERROR",
@@ -1092,10 +1094,7 @@ def process_task(task: dict, server_url: str):
             # Send only normalized absolute next_url to server to avoid ambiguity
             "next_url": normalized_next
         }
-        
-        # Minimal completion log: one line per chapter.
-        log_info_task_once("crawl_completed", task_id, f"✅ CRAWL COMPLETED: Task {task_id}")
-        
+
         # Send result to server and log response for debugging
         try:
             log_info(f"Posting result to server: id={result.get('id')} title={result.get('title')}")
@@ -1126,6 +1125,11 @@ def process_task(task: dict, server_url: str):
                             "chapter_title": cleaned_title,
                             "note": "crawl_done",
                         })
+                        if not normalized_next:
+                            log_info(
+                                f"📚 NOVEL COMPLETED: novel_id={task.get('novel_id')} "
+                                f"last_chapter_id={task_id} title={cleaned_title}"
+                            )
                 except Exception:
                     log_exception("Error reading post_result response")
         except Exception:

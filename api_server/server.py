@@ -145,6 +145,14 @@ def parse_genres(items: List[str], custom: str, limit: int = 3) -> List[str]:
                 genres.append(g)
     return genres[:limit]
 
+def detect_source_language_from_url(url: str) -> str:
+    u = (url or "").lower()
+    if "syosetu.com" in u or "ncode.syosetu.com" in u:
+        return "ja"
+    if "booktoki" in u:
+        return "ko"
+    return "unknown"
+
 def fetch_all_genres(cur) -> List[str]:
     cur.execute("SELECT name FROM genres ORDER BY name ASC")
     return [r[0] for r in cur.fetchall()]
@@ -470,6 +478,7 @@ def fetch_runtime_translation_progress(cur, limit: int = 200):
         FROM novels n
         LEFT JOIN chapters c ON c.novel_id = n.id
         LEFT JOIN chapter_translations ct ON ct.chapter_id = c.id
+        WHERE COALESCE(n.source_language, '') = 'ja'
         GROUP BY n.id, n.title
         HAVING COUNT(c.id) FILTER (
             WHERE c.status = 'DONE'
@@ -511,9 +520,22 @@ def startup_event():
             id SERIAL PRIMARY KEY,
             title TEXT,
             list_url TEXT UNIQUE,
+            source_language TEXT DEFAULT 'unknown',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+    cur.execute("ALTER TABLE novels ADD COLUMN IF NOT EXISTS source_language TEXT DEFAULT 'unknown'")
+    cur.execute(
+        """
+        UPDATE novels
+        SET source_language = CASE
+            WHEN LOWER(COALESCE(list_url, '')) LIKE '%syosetu.com%' THEN 'ja'
+            WHEN LOWER(COALESCE(list_url, '')) LIKE '%booktoki%' THEN 'ko'
+            ELSE source_language
+        END
+        WHERE source_language IS NULL OR source_language = '' OR source_language = 'unknown'
+        """
+    )
     cur.execute("""
         CREATE TABLE IF NOT EXISTS chapters (
             id SERIAL PRIMARY KEY,
@@ -979,6 +1001,7 @@ def web_request_submit(
     status = {"type": "success", "msg": "요청이 등록되었습니다."}
     all_genres = []
     try:
+        source_language = detect_source_language_from_url(url)
         cur.execute(
             "INSERT INTO novels (title, list_url) VALUES (%s, %s) ON CONFLICT (list_url) DO NOTHING",
             (title, url)
@@ -988,6 +1011,10 @@ def web_request_submit(
         if not row:
             raise Exception("소설 ID를 찾을 수 없습니다.")
         novel_id = row[0]
+        cur.execute(
+            "UPDATE novels SET source_language = %s WHERE id = %s AND (source_language IS NULL OR source_language = '' OR source_language = 'unknown')",
+            (source_language, novel_id),
+        )
         cur.execute(
             "INSERT INTO chapters (novel_id, url, status) VALUES (%s, %s, 'PENDING') ON CONFLICT (url) DO NOTHING",
             (novel_id, url)
@@ -1028,9 +1055,14 @@ def add_novel(data: NovelReq):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
+        source_language = detect_source_language_from_url(data.url)
         cur.execute("INSERT INTO novels (title, list_url) VALUES (%s, %s) ON CONFLICT (list_url) DO NOTHING", (data.title, data.url))
         cur.execute("SELECT id FROM novels WHERE list_url = %s", (data.url,))
         novel_id = cur.fetchone()[0]
+        cur.execute(
+            "UPDATE novels SET source_language = %s WHERE id = %s AND (source_language IS NULL OR source_language = '' OR source_language = 'unknown')",
+            (source_language, novel_id),
+        )
         cur.execute("INSERT INTO chapters (novel_id, url, status) VALUES (%s, %s, 'PENDING') ON CONFLICT (url) DO NOTHING", (novel_id, data.url))
         cur.execute("""
             SELECT id FROM chapters c1
@@ -1074,18 +1106,38 @@ def read_chapter_api(chapter_id: int):
     row = cur.fetchone()
     conn.close()
     if not row: return {"status": "error", "msg": "없음"}
-    if row[2] == 'PENDING': return {"status": "pending", "msg": "다운로드 중..."}
+    if row[2] != 'DONE': return {"status": "pending", "msg": "다운로드 중..."}
     return {"status": "success", "title": row[0], "content": row[1]}
 
 @app.get("/worker/get")
 def get_job():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, url, novel_id FROM chapters WHERE status = 'PENDING' ORDER BY id ASC LIMIT 1")
-    row = cur.fetchone()
-    conn.close()
-    if row: return {"exists": True, "chapter_id": row[0], "url": row[1], "novel_id": row[2]}
-    else: return {"exists": False}
+    try:
+        cur.execute(
+            """
+            WITH picked AS (
+                SELECT id
+                FROM chapters
+                WHERE status = 'PENDING'
+                ORDER BY id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE chapters c
+            SET status = 'CRAWLING'
+            FROM picked p
+            WHERE c.id = p.id
+            RETURNING c.id, c.url, c.novel_id
+            """
+        )
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    if row:
+        return {"exists": True, "chapter_id": row[0], "url": row[1], "novel_id": row[2]}
+    return {"exists": False}
 
 @app.post("/worker/submit")
 def submit_job(data: JobResult):
