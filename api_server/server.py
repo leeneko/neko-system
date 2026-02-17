@@ -405,6 +405,102 @@ def fetch_runtime_errors(cur, limit: int = 100):
         for r in rows
     ]
 
+def fetch_runtime_request_progress(cur, limit: int = 200):
+    cur.execute(
+        """
+        SELECT
+            n.id,
+            n.title,
+            COUNT(c.id) AS total_count,
+            COUNT(*) FILTER (WHERE c.status = 'DONE') AS done_count,
+            COUNT(*) FILTER (WHERE c.status = 'PENDING') AS pending_count,
+            COUNT(*) FILTER (WHERE c.status = 'FAILED') AS failed_count,
+            MAX(c.id) AS latest_chapter_id
+        FROM novels n
+        LEFT JOIN chapters c ON c.novel_id = n.id
+        GROUP BY n.id, n.title
+        ORDER BY n.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    rows = cur.fetchall()
+    items = []
+    for r in rows:
+        total = int(r[2] or 0)
+        done = int(r[3] or 0)
+        pending = int(r[4] or 0)
+        failed = int(r[5] or 0)
+        crawled = done + failed
+        crawl_percent = round((crawled / total) * 100, 1) if total > 0 else 0.0
+        items.append(
+            {
+                "novel_id": r[0],
+                "novel_title": r[1],
+                "total_count": total,
+                "done_count": done,
+                "pending_count": pending,
+                "failed_count": failed,
+                "crawled_count": crawled,
+                "crawl_percent": crawl_percent,
+                "latest_chapter_id": r[6],
+            }
+        )
+    return items
+
+def fetch_runtime_translation_progress(cur, limit: int = 200):
+    cur.execute(
+        """
+        SELECT
+            n.id,
+            n.title,
+            COUNT(c.id) FILTER (
+                WHERE c.status = 'DONE'
+                  AND COALESCE(c.content, '') <> ''
+            ) AS ready_count,
+            COUNT(DISTINCT c.id) FILTER (
+                WHERE c.status = 'DONE'
+                  AND COALESCE(c.content, '') <> ''
+                  AND ct.chapter_id IS NOT NULL
+            ) AS translated_count,
+            MAX(c.id) FILTER (
+                WHERE c.status = 'DONE'
+                  AND COALESCE(c.content, '') <> ''
+            ) AS latest_ready_chapter_id
+        FROM novels n
+        LEFT JOIN chapters c ON c.novel_id = n.id
+        LEFT JOIN chapter_translations ct ON ct.chapter_id = c.id
+        GROUP BY n.id, n.title
+        HAVING COUNT(c.id) FILTER (
+            WHERE c.status = 'DONE'
+              AND COALESCE(c.content, '') <> ''
+        ) > 0
+        ORDER BY n.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    rows = cur.fetchall()
+    items = []
+    for r in rows:
+        ready = int(r[2] or 0)
+        translated = int(r[3] or 0)
+        remaining = max(ready - translated, 0)
+        percent = round((translated / ready) * 100, 1) if ready > 0 else 0.0
+        items.append(
+            {
+                "novel_id": r[0],
+                "novel_title": r[1],
+                "ready_count": ready,
+                "translated_count": translated,
+                "remaining_count": remaining,
+                "translation_percent": percent,
+                "in_progress": remaining > 0,
+                "latest_ready_chapter_id": r[4],
+            }
+        )
+    return items
+
 # ... [기존 startup_event, health_check 코드는 동일] ...
 @app.on_event("startup")
 def startup_event():
@@ -1070,6 +1166,8 @@ def web_runtime(request: Request):
     cur = conn.cursor()
     try:
         errors = fetch_runtime_errors(cur)
+        request_progress = fetch_runtime_request_progress(cur)
+        translation_progress = fetch_runtime_translation_progress(cur)
     finally:
         conn.close()
     return templates.TemplateResponse(
@@ -1080,6 +1178,8 @@ def web_runtime(request: Request):
             "worker_ok": worker_ok,
             "states": states,
             "errors": errors,
+            "request_progress": request_progress,
+            "translation_progress": translation_progress,
         },
     )
 
@@ -1090,9 +1190,18 @@ def web_runtime_data():
     cur = conn.cursor()
     try:
         errors = fetch_runtime_errors(cur)
+        request_progress = fetch_runtime_request_progress(cur)
+        translation_progress = fetch_runtime_translation_progress(cur)
     finally:
         conn.close()
-    return {"worker_ok": worker_ok, "states": states, "errors": errors, "updated_at": _utc_now().isoformat()}
+    return {
+        "worker_ok": worker_ok,
+        "states": states,
+        "errors": errors,
+        "request_progress": request_progress,
+        "translation_progress": translation_progress,
+        "updated_at": _utc_now().isoformat(),
+    }
 
 @app.get("/web/runtime/retry/{chapter_id}")
 def web_runtime_retry(chapter_id: int, mode: str = "recrawl"):
