@@ -42,6 +42,7 @@ import re
 from datetime import datetime
 from typing import Optional
 from collections import deque
+from urllib.parse import urlparse
 
 # ============================================================================
 # 로깅 설정
@@ -204,6 +205,9 @@ FAIL_ENDPOINT = os.environ.get("OCI_FAIL_ENDPOINT", "/worker/fail")
 STATE_ENDPOINT = os.environ.get("OCI_STATE_ENDPOINT", "/worker/state")
 WORKER_IDLE_LOG_INTERVAL = int(os.environ.get("WORKER_IDLE_LOG_INTERVAL", "60"))
 WORKER_VERBOSE_INFO = os.environ.get("WORKER_VERBOSE_INFO", "0") == "1"
+BOOKTOKI_DELAY_MIN_SEC = float(os.environ.get("BOOKTOKI_DELAY_MIN_SEC", "7"))
+BOOKTOKI_DELAY_MAX_SEC = float(os.environ.get("BOOKTOKI_DELAY_MAX_SEC", "15"))
+_LAST_BOOKTOKI_REQUEST_TS = 0.0
 
 def _build_url(server_url: str, endpoint: str) -> str:
     if not server_url:
@@ -213,6 +217,29 @@ def _build_url(server_url: str, endpoint: str) -> str:
     if not server_url.endswith('/') and not endpoint.startswith('/'):
         return server_url + '/' + endpoint
     return server_url + endpoint
+
+def _is_booktoki_url(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        host = (url or "").lower()
+    return "booktoki" in host
+
+def _apply_site_delay(url: str):
+    global _LAST_BOOKTOKI_REQUEST_TS
+    if not _is_booktoki_url(url):
+        return
+    now = time.time()
+    wait_target = random.uniform(BOOKTOKI_DELAY_MIN_SEC, BOOKTOKI_DELAY_MAX_SEC)
+    elapsed = now - _LAST_BOOKTOKI_REQUEST_TS if _LAST_BOOKTOKI_REQUEST_TS > 0 else 10**9
+    remain = wait_target - elapsed
+    if remain > 0:
+        if WORKER_VERBOSE_INFO:
+            log_info(f"⏳ [booktoki] Global throttle wait {remain:.1f}s (target {wait_target:.1f}s)")
+        time.sleep(remain)
+    _LAST_BOOKTOKI_REQUEST_TS = time.time()
 
 def get_next_task(server_url: str) -> Optional[dict]:
     global _LAST_GET_TASK_ERROR
@@ -409,6 +436,7 @@ def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
     status = None
     MANUAL_WAIT_SECONDS = int(os.environ.get("DRISSION_MANUAL_WAIT", "600"))
     WAIT_LOG_INTERVAL = int(os.environ.get("BROWSER_WAIT_LOG_INTERVAL", "30"))
+    _apply_site_delay(url)
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",

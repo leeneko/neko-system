@@ -48,6 +48,55 @@
             {% endfor %}
         </section>
 
+        <section class="runtime-progress-grid">
+            <article class="panel">
+                <h3 style="margin-top:0;">소설 요청 목록 / 크롤링 진행률</h3>
+                <div id="requestProgressList">
+                    {% if request_progress and request_progress|length > 0 %}
+                        {% for p in request_progress %}
+                        <article class="progress-item">
+                            <div class="progress-top">
+                                <div class="progress-title">#{{ p.novel_id }} {{ p.novel_title }}</div>
+                                <div class="progress-rate">{{ p.crawl_percent }}%</div>
+                            </div>
+                            <div class="progress-bar"><span style="width: {{ p.crawl_percent }}%;"></span></div>
+                            <div class="runtime-detail">완료/실패/대기: {{ p.done_count }}/{{ p.failed_count }}/{{ p.pending_count }} (총 {{ p.total_count }})</div>
+                        </article>
+                        {% endfor %}
+                    {% else %}
+                        <div class="runtime-detail">요청된 소설이 없습니다.</div>
+                    {% endif %}
+                </div>
+            </article>
+
+            <article class="panel">
+                <h3 style="margin-top:0;">번역 진행 중 소설 / 진행률</h3>
+                <div id="translationProgressList">
+                    {% if translation_progress and translation_progress|length > 0 %}
+                        {% set ns = namespace(has_row=false) %}
+                        {% for t in translation_progress %}
+                            {% if t.in_progress %}
+                            {% set ns.has_row = true %}
+                            <article class="progress-item">
+                                <div class="progress-top">
+                                    <div class="progress-title">#{{ t.novel_id }} {{ t.novel_title }}</div>
+                                    <div class="progress-rate">{{ t.translation_percent }}%</div>
+                                </div>
+                                <div class="progress-bar"><span style="width: {{ t.translation_percent }}%;"></span></div>
+                                <div class="runtime-detail">번역완료/대기: {{ t.translated_count }}/{{ t.remaining_count }} (번역대상 {{ t.ready_count }})</div>
+                            </article>
+                            {% endif %}
+                        {% endfor %}
+                        {% if not ns.has_row %}
+                        <div class="runtime-detail">번역 진행 중인 소설이 없습니다.</div>
+                        {% endif %}
+                    {% else %}
+                        <div class="runtime-detail">번역 대상 소설이 없습니다.</div>
+                    {% endif %}
+                </div>
+            </article>
+        </section>
+
         <section class="runtime-errors">
             <div class="panel">
                 <h3 style="margin-top:0;">오류 내역</h3>
@@ -78,6 +127,38 @@
         var grid = document.getElementById("runtimeGrid");
         var workerDot = document.getElementById("workerDot");
         var errorList = document.getElementById("errorList");
+        var requestProgressList = document.getElementById("requestProgressList");
+        var translationProgressList = document.getElementById("translationProgressList");
+
+        function renderProgress(container, items, emptyMsg, mode){
+            if (!container) return;
+            var rows = items || [];
+            if (mode === "translation") {
+                rows = rows.filter(function(x){ return !!x.in_progress; });
+            }
+            if (!rows.length) {
+                container.innerHTML = '<div class="runtime-detail">' + emptyMsg + '</div>';
+                return;
+            }
+            container.innerHTML = "";
+            rows.forEach(function(item){
+                var rate = mode === "translation" ? (item.translation_percent ?? 0) : (item.crawl_percent ?? 0);
+                var title = '#' + (item.novel_id ?? '-') + ' ' + (item.novel_title || '-');
+                var detail = mode === "translation"
+                    ? ('번역완료/대기: ' + (item.translated_count ?? 0) + '/' + (item.remaining_count ?? 0) + ' (번역대상 ' + (item.ready_count ?? 0) + ')')
+                    : ('완료/실패/대기: ' + (item.done_count ?? 0) + '/' + (item.failed_count ?? 0) + '/' + (item.pending_count ?? 0) + ' (총 ' + (item.total_count ?? 0) + ')');
+                var html = ''
+                    + '<article class="progress-item">'
+                    + '  <div class="progress-top">'
+                    + '    <div class="progress-title">' + title + '</div>'
+                    + '    <div class="progress-rate">' + rate + '%</div>'
+                    + '  </div>'
+                    + '  <div class="progress-bar"><span style="width:' + rate + '%;"></span></div>'
+                    + '  <div class="runtime-detail">' + detail + '</div>'
+                    + '</article>';
+                container.insertAdjacentHTML("beforeend", html);
+            });
+        }
 
         function render(data){
             var states = data.states || [];
@@ -132,6 +213,19 @@
                     });
                 }
             }
+
+            renderProgress(
+                requestProgressList,
+                data.request_progress || [],
+                "요청된 소설이 없습니다.",
+                "request"
+            );
+            renderProgress(
+                translationProgressList,
+                data.translation_progress || [],
+                "번역 진행 중인 소설이 없습니다.",
+                "translation"
+            );
         }
 
         function poll(){

@@ -626,6 +626,55 @@ input[type="radio"] {
     margin-top: 14px;
 }
 
+.runtime-progress-grid {
+    margin-top: 14px;
+    display: grid;
+    gap: 12px;
+}
+
+.progress-item {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px;
+    background: var(--bg);
+    margin-bottom: 8px;
+}
+
+.progress-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.progress-title {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.progress-rate {
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--border) 70%, transparent);
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.progress-bar span {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, white));
+}
+
 .error-item {
     background: var(--card);
     border: 1px solid #f0b7b7;
