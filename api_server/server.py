@@ -772,12 +772,12 @@ def web_read(request: Request, chapter_id: int):
             line = line.strip()
             if not line:
                 if chunk:
-                    paras.append(" ".join(chunk).strip())
+                    paras.append("\n".join(chunk).strip())
                     chunk = []
                 continue
             chunk.append(line)
         if chunk:
-            paras.append(" ".join(chunk).strip())
+            paras.append("\n".join(chunk).strip())
         return [p for p in paras if p]
 
     def build_mixed_html(original_text: str, translated_text: str) -> str:
@@ -785,16 +785,16 @@ def web_read(request: Request, chapter_id: int):
         trans_lines = split_paragraphs(translated_text)
         max_len = max(len(orig_lines), len(trans_lines), 1)
         parts = []
+        def render_mixed_line(text: str) -> str:
+            if not text.strip():
+                return "\u00a0"
+            return escape(text).replace("\n", "<br>")
         for i in range(max_len):
             o = orig_lines[i] if i < len(orig_lines) else ""
             t = trans_lines[i] if i < len(trans_lines) else ""
-            if not o.strip():
-                o = "\u00a0"
-            if not t.strip():
-                t = "\u00a0"
             parts.append(
-                f'<div class="paragraph-pair"><div class="line original">{escape(o)}</div>'
-                f'<div class="line translated">{escape(t)}</div></div>'
+                f'<div class="paragraph-pair"><div class="line original">{render_mixed_line(o)}</div>'
+                f'<div class="line translated">{render_mixed_line(t)}</div></div>'
             )
         return "\n".join(parts)
 

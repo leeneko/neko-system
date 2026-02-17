@@ -120,7 +120,6 @@ def log_info(msg: str) -> None:
     major_tokens = (
         "TRANSLATOR STARTED",
         "TRANSLATION COMPLETED",
-        "No chapters to translate",
         "Shutdown requested",
     )
     if any(token in str(msg) for token in major_tokens):
